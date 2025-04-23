@@ -1,7 +1,7 @@
 import type { QuickJSHandle, QuickJSContext } from "quickjs-emscripten";
 
 import { isObject } from "./util";
-import { call, isHandleObject, mayConsumeAll } from "./vmutil";
+import { call, isHandleObject } from "./vmutil";
 
 export type SyncMode = "both" | "vm" | "host";
 
