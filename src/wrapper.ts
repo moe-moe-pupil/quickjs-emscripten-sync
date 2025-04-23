@@ -21,7 +21,6 @@ export function wrap<T = any>(
   if (
     !isObject(target) ||
     target instanceof Promise ||
-    target instanceof Date ||
     (wrappable && !wrappable(target))
   ) {
     return undefined;
@@ -35,49 +34,9 @@ export function wrap<T = any>(
     return target as Wrapped<T>;
   }
 
-  const rec = new Proxy(target as any, {
-    get(obj, key) {
-      return key === proxyKeySymbol ? obj : Reflect.get(obj, key);
-    },
-    set(obj, key, value, receiver) {
-      const v = unwrap(value, proxyKeySymbol);
-      const sync = syncMode?.(receiver) ?? "host";
-      if ((sync !== "vm" && !Reflect.set(obj, key, v, receiver)) || sync === "host" || !ctx.alive)
-        return true;
-
-      mayConsumeAll(
-        [marshal(receiver), marshal(key), marshal(v)],
-        (receiverHandle, keyHandle, valueHandle) => {
-          const [handle2, unwrapped] = unwrapHandle(ctx, receiverHandle, proxyKeySymbolHandle);
-          if (unwrapped) {
-            handle2.consume(h => ctx.setProp(h, keyHandle, valueHandle));
-          } else {
-            ctx.setProp(handle2, keyHandle, valueHandle);
-          }
-        },
-      );
-
-      return true;
-    },
-    deleteProperty(obj, key) {
-      const sync = syncMode?.(rec) ?? "host";
-      return mayConsumeAll([marshal(rec), marshal(key)], (recHandle, keyHandle) => {
-        const [handle2, unwrapped] = unwrapHandle(ctx, recHandle, proxyKeySymbolHandle);
-
-        if (sync === "vm" || Reflect.deleteProperty(obj, key)) {
-          if (sync === "host" || !ctx.alive) return true;
-
-          if (unwrapped) {
-            handle2.consume(h => call(ctx, `(a, b) => delete a[b]`, undefined, h, keyHandle));
-          } else {
-            call(ctx, `(a, b) => delete a[b]`, undefined, handle2, keyHandle);
-          }
-        }
-        return true;
-      });
-    },
-  }) as Wrapped<T>;
-  return rec;
+  // Directly return the target without wrapping it in a proxy.
+  // Since the wrapping is bypassed, we return the target as it is.
+  return target as Wrapped<T>; // In this case, this line has minimal effect but aligns with the original function's typing.
 }
 
 export function wrapHandle(
@@ -101,80 +60,10 @@ export function wrapHandle(
     return [handle as Wrapped<QuickJSHandle>, false];
   }
 
-  const getSyncMode = (h: QuickJSHandle) => {
-    const res = syncMode?.(unmarshal(h));
-    if (typeof res === "string") return ctx.newString(res);
-    return ctx.undefined;
-  };
+  // Since wrapping is bypassed, we return the original handle directly,
+  // indicating no wrapping has been applied.
+  return [handle, false] as [Wrapped<QuickJSHandle> | undefined, boolean];
 
-  const setter = (h: QuickJSHandle, keyHandle: QuickJSHandle, valueHandle: QuickJSHandle) => {
-    const target = unmarshal(h);
-    if (!target) return;
-    const key = unmarshal(keyHandle);
-    if (key === "__proto__") return; // for security
-    const value = unmarshal(valueHandle);
-    unwrap(target, proxyKeySymbol)[key] = value;
-  };
-
-  const deleter = (h: QuickJSHandle, keyHandle: QuickJSHandle) => {
-    const target = unmarshal(h);
-    if (!target) return;
-    const key = unmarshal(keyHandle);
-    delete unwrap(target, proxyKeySymbol)[key];
-  };
-
-  return ctx
-    .newFunction("proxyFuncs", (t, ...args) => {
-      const name = ctx.getNumber(t);
-      switch (name) {
-        case 1:
-          return getSyncMode(args[0]);
-        case 2:
-          return setter(args[0], args[1], args[2]);
-        case 3:
-          return deleter(args[0], args[1]);
-      }
-      return ctx.undefined;
-    })
-    .consume(proxyFuncs => [
-      call(
-        ctx,
-        `(target, sym, proxyFuncs) => {
-          const rec =  new Proxy(target, {
-            get(obj, key, receiver) {
-              return key === sym ? obj : Reflect.get(obj, key, receiver)
-            },
-            set(obj, key, value, receiver) {
-              const v = typeof value === "object" && value !== null || typeof value === "function"
-                ? value[sym] ?? value
-                : value;
-              const sync = proxyFuncs(1, receiver) ?? "vm";
-              if (sync === "host" || Reflect.set(obj, key, v, receiver)) {
-                if (sync !== "vm") {
-                  proxyFuncs(2, receiver, key, v);
-                }
-              }
-              return true;
-            },
-            deleteProperty(obj, key) {
-              const sync = proxyFuncs(1, rec) ?? "vm";
-              if (sync === "host" || Reflect.deleteProperty(obj, key)) {
-                if (sync !== "vm") {
-                  proxyFuncs(3, rec, key);
-                }
-              }
-              return true;
-            },
-          });
-          return rec;
-        }`,
-        undefined,
-        handle,
-        proxyKeySymbolHandle,
-        proxyFuncs,
-      ) as Wrapped<QuickJSHandle>,
-      true,
-    ]);
 }
 
 export function unwrap<T>(obj: T, key: string | symbol): T {
@@ -203,7 +92,7 @@ export function isHandleWrapped(
     call(
       ctx,
       // promise and date cannot be wrapped
-      `(a, s) => (a instanceof Promise) || (a instanceof Date) || (typeof a === "object" && a !== null || typeof a === "function") && !!a[s]`,
+      `(a, s) => (a instanceof Promise) || (typeof a === "object" && a !== null || typeof a === "function") && !!a[s]`,
       undefined,
       handle,
       key,
