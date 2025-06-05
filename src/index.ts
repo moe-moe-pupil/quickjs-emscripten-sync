@@ -63,6 +63,8 @@ export type Options = {
   cleanupThrottleMs?: number;
   /** Use worker thread for cleanup processing. Completely eliminates blocking on main thread. */
   useWorkerCleanup?: boolean;
+  /** Delay in milliseconds before handles are eligible for cleanup after being created. Useful for entities that need time to be used. Default: 0 */
+  cleanupDelayMs?: number;
 };
 
 /**
@@ -88,6 +90,7 @@ export class Arena {
   private _lastCleanupTime = 0;
   private _cleanupWorker?: any; // Worker instance
   private _cleanupIdCounter = 0;
+  private _delayedCleanup: Map<any, number> = new Map(); // target -> timestamp when created
 
   /** Constructs a new Arena instance. It requires a quickjs-emscripten context initialized with `quickjs.newContext()`. */
   constructor(ctx: QuickJSContext, options?: Options) {
@@ -128,8 +131,16 @@ export class Arena {
       
       // Handle messages from worker
       this._cleanupWorker.on('message', (message: any) => {
-        if (message.type === 'cleanupBatch') {
-          this._processCleanupBatch(message.batch, message.flush);
+        switch (message.type) {
+          case 'processBatch':
+            this._processWorkerBatch();
+            break;
+          case 'checkContinue':
+            this._checkContinueProcessing();
+            break;
+          case 'flushAll':
+            this._processAllPending();
+            break;
         }
       });
       
@@ -147,20 +158,52 @@ export class Arena {
   }
 
   /**
-   * Process a batch of cleanup operations on the main thread
+   * Process a small batch when triggered by worker
    */
-  private _processCleanupBatch(batch: any[], _flush = false) {
-    for (const { target, wrappedTarget } of batch) {
+  private _processWorkerBatch() {
+    const BATCH_SIZE = 5;
+    const batch = Array.from(this._pendingCleanup).slice(0, BATCH_SIZE);
+    
+    for (const [t, wrappedT] of batch) {
       try {
-        const unwrappedT = this._unwrap(target);
+        const unwrappedT = this._unwrap(t);
         if (this._sync.has(unwrappedT)) {
           this._sync.delete(unwrappedT);
-          // Use fastDelete for worker-based cleanup to maintain speed
-          this._map.fastDelete(wrappedTarget, false);
-          this.unregister(target, false);
+          this._map.fastDelete(wrappedT, false);
+          this.unregister(t, false);
+        }
+        this._pendingCleanup.delete([t, wrappedT]);
+      } catch (error) {
+        console.warn('Cleanup item failed:', error);
+      }
+    }
+  }
+
+  /**
+   * Check if more processing is needed and trigger worker if so
+   */
+  private _checkContinueProcessing() {
+    if (this._pendingCleanup.size > 0) {
+      this._cleanupWorker?.postMessage({ type: 'triggerProcessing' });
+    }
+  }
+
+  /**
+   * Process all pending cleanup items immediately
+   */
+  private _processAllPending() {
+    const toCleanup = Array.from(this._pendingCleanup);
+    this._pendingCleanup.clear();
+    
+    for (const [t, wrappedT] of toCleanup) {
+      try {
+        const unwrappedT = this._unwrap(t);
+        if (this._sync.has(unwrappedT)) {
+          this._sync.delete(unwrappedT);
+          this._map.fastDelete(wrappedT, false);
+          this.unregister(t, false);
         }
       } catch (error) {
-        // Continue with other items if one fails
         console.warn('Cleanup item failed:', error);
       }
     }
@@ -175,6 +218,9 @@ export class Arena {
       this._cleanupWorker.terminate();
       this._cleanupWorker = undefined;
     }
+    
+    // Clear delayed cleanup tracking
+    this._delayedCleanup.clear();
     
     // Force synchronous cleanup before disposing
     this._disposeSync();
@@ -332,14 +378,38 @@ export class Arena {
    * Schedule a handle for cleanup without blocking the current operation
    */
   private _scheduleCleanup(t: any, wrappedT: any) {
-    // Use worker thread if available
+    const cleanupDelayMs = this._options?.cleanupDelayMs ?? 0;
+    
+    // Record when this handle was created for delayed cleanup
+    if (cleanupDelayMs > 0) {
+      this._delayedCleanup.set(t, Date.now());
+    }
+    
+    // If there's a delay, schedule cleanup for later
+    if (cleanupDelayMs > 0) {
+      setTimeout(() => {
+        this._executeCleanup(t, wrappedT);
+      }, cleanupDelayMs);
+      return;
+    }
+    
+    // No delay - execute cleanup immediately
+    this._executeCleanup(t, wrappedT);
+  }
+
+  /**
+   * Execute the actual cleanup scheduling (after any delay)
+   */
+  private _executeCleanup(t: any, wrappedT: any) {
+    // Remove from delayed cleanup tracking
+    this._delayedCleanup.delete(t);
+    
+    // For worker mode: just add to local queue and trigger worker processing
     if (this._cleanupWorker) {
-      const id = ++this._cleanupIdCounter;
+      this._pendingCleanup.add([t, wrappedT]);
+      // Tell worker to process (without sending the actual objects)
       this._cleanupWorker.postMessage({
-        type: 'schedule',
-        id,
-        target: t,
-        wrappedTarget: wrappedT
+        type: 'triggerProcessing'
       });
       return;
     }
@@ -494,6 +564,20 @@ export class Arena {
       return 0; // Worker handles the queue
     }
     return this._pendingCleanup.size;
+  }
+
+  /**
+   * Get the number of handles waiting for delayed cleanup.
+   */
+  getDelayedCleanupCount(): number {
+    return this._delayedCleanup.size;
+  }
+
+  /**
+   * Cancel delayed cleanup for a specific target (useful if entity is still being used).
+   */
+  cancelDelayedCleanup(target: any): boolean {
+    return this._delayedCleanup.delete(target);
   }
 
   /**

@@ -2,15 +2,9 @@ const { parentPort } = require('worker_threads');
 
 class CleanupWorker {
   constructor() {
-    this.pendingCleanup = new Map(); // id -> [target, wrappedTarget]
     this.isProcessing = false;
     this.throttleMs = 0;
     this.lastCleanupTime = 0;
-    this.counter = 0;
-    
-    // Auto-adjustment settings
-    this.microChunkSize = 5;
-    this.maxProcessingTime = 2;
     
     this.setupMessageHandler();
   }
@@ -18,8 +12,8 @@ class CleanupWorker {
   setupMessageHandler() {
     parentPort.on('message', (message) => {
       switch (message.type) {
-        case 'schedule':
-          this.scheduleCleanup(message.id, message.target, message.wrappedTarget);
+        case 'triggerProcessing':
+          this.triggerProcessing();
           break;
         case 'setThrottle':
           this.throttleMs = message.ms;
@@ -28,47 +22,20 @@ class CleanupWorker {
           this.flushCleanup();
           break;
         case 'clear':
-          this.clearAll();
-          break;
-        case 'getCount':
-          parentPort.postMessage({
-            type: 'count',
-            count: this.pendingCleanup.size
-          });
+          this.isProcessing = false;
           break;
       }
     });
   }
 
-  scheduleCleanup(id, target, wrappedTarget) {
-    this.pendingCleanup.set(id, [target, wrappedTarget]);
-    this.autoAdjustCleanup();
-    
+  triggerProcessing() {
     if (!this.isProcessing) {
       this.startProcessing();
     }
   }
 
-  autoAdjustCleanup() {
-    const pendingCount = this.pendingCleanup.size;
-    
-    if (pendingCount > 1000) {
-      this.throttleMs = 100;
-      this.microChunkSize = 3;
-    } else if (pendingCount > 500) {
-      this.throttleMs = 50;
-      this.microChunkSize = 4;
-    } else if (pendingCount > 100) {
-      this.throttleMs = 10;
-      this.microChunkSize = 5;
-    } else {
-      this.throttleMs = 0;
-      this.microChunkSize = 8;
-    }
-  }
-
   startProcessing() {
-    if (this.isProcessing || this.pendingCleanup.size === 0) {
+    if (this.isProcessing) {
       return;
     }
 
@@ -84,73 +51,27 @@ class CleanupWorker {
 
     this.isProcessing = true;
     this.lastCleanupTime = now;
-    setImmediate(() => this.processBatch());
-  }
-
-  processBatch() {
-    if (this.pendingCleanup.size === 0) {
+    
+    // Tell main thread to process a small batch
+    parentPort.postMessage({
+      type: 'processBatch'
+    });
+    
+    // Continue with small intervals to keep processing smooth
+    setTimeout(() => {
       this.isProcessing = false;
-      return;
-    }
-
-    const startTime = performance.now();
-    const batch = [];
-    const entries = Array.from(this.pendingCleanup.entries());
-    let processed = 0;
-
-    // Create a batch of items to send to main thread
-    for (const [id, [target, wrappedTarget]] of entries) {
-      if (processed >= this.microChunkSize) {
-        break;
-      }
-
-      batch.push({ id, target, wrappedTarget });
-      this.pendingCleanup.delete(id);
-      processed++;
-
-      // Time-based yielding
-      const elapsedTime = performance.now() - startTime;
-      if (elapsedTime >= this.maxProcessingTime) {
-        break;
-      }
-    }
-
-    // Send batch to main thread for actual cleanup
-    if (batch.length > 0) {
+      // Check if more processing is needed by telling main thread
       parentPort.postMessage({
-        type: 'cleanupBatch',
-        batch: batch
+        type: 'checkContinue'
       });
-    }
-
-    // Continue processing if there are more items
-    if (this.pendingCleanup.size > 0) {
-      setImmediate(() => this.processBatch());
-    } else {
-      this.isProcessing = false;
-    }
+    }, 2); // Very small delay for non-blocking
   }
 
   flushCleanup() {
-    // Send all remaining items immediately
-    const batch = Array.from(this.pendingCleanup.entries()).map(([id, [target, wrappedTarget]]) => ({
-      id, target, wrappedTarget
-    }));
-    
-    if (batch.length > 0) {
-      this.pendingCleanup.clear();
-      parentPort.postMessage({
-        type: 'cleanupBatch',
-        batch: batch,
-        flush: true
-      });
-    }
-    
-    this.isProcessing = false;
-  }
-
-  clearAll() {
-    this.pendingCleanup.clear();
+    // Tell main thread to flush all
+    parentPort.postMessage({
+      type: 'flushAll'
+    });
     this.isProcessing = false;
   }
 }
