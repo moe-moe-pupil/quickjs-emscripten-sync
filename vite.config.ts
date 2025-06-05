@@ -9,6 +9,23 @@ export default defineConfig({
     dts({
       rollupTypes: true,
     }),
+    // Copy cleanup-worker.js to dist
+    {
+      name: 'copy-worker',
+      writeBundle() {
+        try {
+          const fs = require('fs');
+          const path = require('path');
+          fs.copyFileSync(
+            path.resolve('src/cleanup-worker.js'),
+            path.resolve('dist/cleanup-worker.js')
+          );
+          console.log('✓ Copied cleanup-worker.js to dist/');
+        } catch (error) {
+          console.warn('⚠ Failed to copy cleanup-worker.js:', error);
+        }
+      }
+    }
   ],
   build: {
     target: "es2015",

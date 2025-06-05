@@ -7,12 +7,16 @@ export default class VMMap {
   _map3: Map<number, QuickJSHandle> = new Map();
   _map4: Map<number, QuickJSHandle> = new Map();
   _counterMap: Map<number, any> = new Map();
+  // Add reverse lookup maps to eliminate linear searches
+  _reverseMap1: Map<number, any> = new Map();
+  _reverseMap2: Map<number, any> = new Map();
   _disposables: Set<QuickJSHandle> = new Set();
   _mapGet: QuickJSHandle;
   _mapSet: QuickJSHandle;
   _mapDelete: QuickJSHandle;
   _mapClear: QuickJSHandle;
   _counter = Number.MIN_SAFE_INTEGER;
+
 
   constructor(ctx: QuickJSContext) {
     this.ctx = ctx;
@@ -59,6 +63,17 @@ export default class VMMap {
     this._disposables.add(this._mapClear);
   }
 
+  clone() {
+    return {
+      _map1: new Map(JSON.parse(JSON.stringify(Array.from(this._map1)))),
+      _map2: new Map(JSON.parse(JSON.stringify(Array.from(this._map2)))),
+      _map3: new Map(JSON.parse(JSON.stringify(Array.from(this._map3)))),
+      _map4: new Map(JSON.parse(JSON.stringify(Array.from(this._map4)))),
+      _counterMap: new Map(JSON.parse(JSON.stringify(Array.from(this._counterMap)))),
+    }
+  }
+
+
   set(key: any, handle: QuickJSHandle, key2?: any, handle2?: QuickJSHandle): boolean {
     if (!handle.alive || (handle2 && !handle2.alive)) return false;
 
@@ -72,8 +87,10 @@ export default class VMMap {
     this._map1.set(key, counter);
     this._map3.set(counter, handle);
     this._counterMap.set(counter, key);
+    this._reverseMap1.set(counter, key);
     if (key2) {
       this._map2.set(key2, counter);
+      this._reverseMap2.set(counter, key2);
       if (handle2) {
         this._map4.set(counter, handle2);
       }
@@ -89,9 +106,9 @@ export default class VMMap {
   merge(
     iteratable:
       | Iterable<
-          | [any, QuickJSHandle | undefined]
-          | [any, QuickJSHandle | undefined, any, QuickJSHandle | undefined]
-        >
+        | [any, QuickJSHandle | undefined]
+        | [any, QuickJSHandle | undefined, any, QuickJSHandle | undefined]
+      >
       | undefined,
   ) {
     if (!iteratable) return;
@@ -135,43 +152,92 @@ export default class VMMap {
     return this._map1.keys();
   }
 
+  deleteMany(keys: any[], dispose?: boolean) {
+    // Just call delete for each key - much simpler and now efficient
+    for (const key of keys) {
+      this.delete(key, dispose);
+    }
+  }
+
+  /**
+   * Ultra-fast delete that skips QuickJS calls - use for bulk cleanup
+   * WARNING: This may leave handles in QuickJS WeakMap, but prevents lag
+   */
+  fastDelete(key: any, dispose?: boolean) {
+    const num = this._map1.get(key) ?? this._map2.get(key);
+    if (typeof num === "undefined") return;
+
+    const handle = this._map3.get(num);
+    const handle2 = this._map4.get(num);
+    
+    // Skip the expensive QuickJS _call entirely
+    
+    // Fast cleanup using reverse maps
+    const reverseKey1 = this._reverseMap1.get(num);
+    const reverseKey2 = this._reverseMap2.get(num);
+    
+    // Delete all related entries
+    this._map1.delete(key);
+    this._map2.delete(key);
+    this._map3.delete(num);
+    this._map4.delete(num);
+    this._counterMap.delete(num);
+    
+    // Clean up reverse maps
+    if (reverseKey1 !== undefined && reverseKey1 !== key) {
+      this._map1.delete(reverseKey1);
+    }
+    this._reverseMap1.delete(num);
+    
+    if (reverseKey2 !== undefined && reverseKey2 !== key) {
+      this._map2.delete(reverseKey2);
+    }
+    this._reverseMap2.delete(num);
+
+    if (dispose) {
+      if (handle?.alive) handle.dispose();
+      if (handle2?.alive) handle2.dispose();
+    }
+  }
+
   delete(key: any, dispose?: boolean) {
     const num = this._map1.get(key) ?? this._map2.get(key);
     if (typeof num === "undefined") return;
 
     const handle = this._map3.get(num);
     const handle2 = this._map4.get(num);
-    this._call(
-      this._mapDelete,
-      undefined,
-      ...[handle, handle2].filter((h): h is QuickJSHandle => !!h?.alive),
-    );
+    
+    // BATCH the QuickJS call to reduce overhead - only call if handles are alive
+    const aliveHandles = [handle, handle2].filter((h): h is QuickJSHandle => !!h?.alive);
+    if (aliveHandles.length > 0) {
+      try {
+        this._call(this._mapDelete, undefined, ...aliveHandles);
+      } catch (e) {
+        // If QuickJS call fails, continue with cleanup anyway
+      }
+    }
 
+    // Fast cleanup using reverse maps - no double deletion
+    const reverseKey1 = this._reverseMap1.get(num);
+    const reverseKey2 = this._reverseMap2.get(num);
+    
+    // Delete all related entries
     this._map1.delete(key);
     this._map2.delete(key);
     this._map3.delete(num);
     this._map4.delete(num);
-
-    for (const [k, v] of this._map1) {
-      if (v === num) {
-        this._map1.delete(k);
-        break;
-      }
+    this._counterMap.delete(num);
+    
+    // Clean up reverse maps
+    if (reverseKey1 !== undefined && reverseKey1 !== key) {
+      this._map1.delete(reverseKey1);
     }
-
-    for (const [k, v] of this._map2) {
-      if (v === num) {
-        this._map2.delete(k);
-        break;
-      }
+    this._reverseMap1.delete(num);
+    
+    if (reverseKey2 !== undefined && reverseKey2 !== key) {
+      this._map2.delete(reverseKey2);
     }
-
-    for (const [k, v] of this._counterMap) {
-      if (v === key) {
-        this._counterMap.delete(k);
-        break;
-      }
-    }
+    this._reverseMap2.delete(num);
 
     if (dispose) {
       if (handle?.alive) handle.dispose();
@@ -193,6 +259,8 @@ export default class VMMap {
     this._map3.clear();
     this._map4.clear();
     this._counterMap.clear();
+    this._reverseMap1.clear();
+    this._reverseMap2.clear();
     if (this._mapClear.alive) {
       this._call(this._mapClear, undefined);
     }
