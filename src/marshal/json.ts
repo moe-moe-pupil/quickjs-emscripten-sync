@@ -6,8 +6,9 @@ export default function marshalJSON(
   ctx: QuickJSContext,
   target: unknown,
   preMarshal: (target: unknown, handle: QuickJSHandle) => QuickJSHandle | undefined,
+  circularHandling: 'replace' | 'ignore' | 'error' = 'replace',
 ): QuickJSHandle {
-  const raw = json(ctx, target);
+  const raw = json(ctx, target, circularHandling);
   const handle = preMarshal(target, raw) ?? raw;
   return handle;
 }

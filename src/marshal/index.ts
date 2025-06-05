@@ -19,6 +19,7 @@ export type Options = {
   ) => QuickJSHandle | undefined;
   preApply?: (target: Function, thisArg: unknown, args: unknown[]) => any;
   custom?: Iterable<(obj: unknown, ctx: QuickJSContext) => QuickJSHandle | undefined>;
+  circularHandling?: 'replace' | 'ignore' | 'error';
 };
 
 export function marshal(target: unknown, options: Options): QuickJSHandle {
@@ -44,7 +45,7 @@ export function marshal(target: unknown, options: Options): QuickJSHandle {
   const pre2 = (target: any, handle: QuickJSHandle | QuickJSDeferredPromise) =>
     pre(target, handle, marshalable);
   if (marshalable === "json") {
-    return marshalJSON(ctx, target, pre2);
+    return marshalJSON(ctx, target, pre2, options.circularHandling);
   }
 
   const marshal2 = (t: unknown) => marshal(t, options);

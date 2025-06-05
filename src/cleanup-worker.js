@@ -77,4 +77,9 @@ class CleanupWorker {
 }
 
 // Start the worker
-new CleanupWorker(); 
+new CleanupWorker();
+
+// Send ready signal to main thread
+parentPort.postMessage({
+  type: 'ready'
+}); 

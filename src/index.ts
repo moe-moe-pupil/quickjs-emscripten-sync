@@ -65,6 +65,10 @@ export type Options = {
   useWorkerCleanup?: boolean;
   /** Delay in milliseconds before handles are eligible for cleanup after being created. Useful for entities that need time to be used. Default: 0 */
   cleanupDelayMs?: number;
+  /** Auto-restart worker thread after this many operations to prevent accumulation of overhead. Default: 0 (disabled) */
+  workerRestartAfter?: number;
+  /** How to handle circular references during JSON marshalling. Default: 'replace' */
+  circularReferenceHandling?: 'replace' | 'ignore' | 'error';
 };
 
 /**
@@ -91,6 +95,9 @@ export class Arena {
   private _cleanupWorker?: any; // Worker instance
   private _cleanupIdCounter = 0;
   private _delayedCleanup: Map<any, number> = new Map(); // target -> timestamp when created
+  private _workerOperationCount = 0;
+  private _workerLastRestart = Date.now();
+  private _schedulingCleanup: WeakSet<any> = new WeakSet(); // Track objects currently being scheduled
 
   /** Constructs a new Arena instance. It requires a quickjs-emscripten context initialized with `quickjs.newContext()`. */
   constructor(ctx: QuickJSContext, options?: Options) {
@@ -140,6 +147,9 @@ export class Arena {
             break;
           case 'flushAll':
             this._processAllPending();
+            break;
+          case 'ready':
+            console.log('🔧 Cleanup worker ready');
             break;
         }
       });
@@ -378,23 +388,35 @@ export class Arena {
    * Schedule a handle for cleanup without blocking the current operation
    */
   private _scheduleCleanup(t: any, wrappedT: any) {
-    const cleanupDelayMs = this._options?.cleanupDelayMs ?? 0;
-    
-    // Record when this handle was created for delayed cleanup
-    if (cleanupDelayMs > 0) {
-      this._delayedCleanup.set(t, Date.now());
+    // Prevent infinite recursion by tracking what's being scheduled
+    if (this._schedulingCleanup.has(t)) {
+      return; // Already scheduling cleanup for this object
     }
     
-    // If there's a delay, schedule cleanup for later
-    if (cleanupDelayMs > 0) {
-      setTimeout(() => {
-        this._executeCleanup(t, wrappedT);
-      }, cleanupDelayMs);
-      return;
-    }
+    this._schedulingCleanup.add(t);
     
-    // No delay - execute cleanup immediately
-    this._executeCleanup(t, wrappedT);
+    try {
+      const cleanupDelayMs = this._options?.cleanupDelayMs ?? 0;
+      
+      // Record when this handle was created for delayed cleanup
+      if (cleanupDelayMs > 0) {
+        this._delayedCleanup.set(t, Date.now());
+      }
+      
+      // If there's a delay, schedule cleanup for later
+      if (cleanupDelayMs > 0) {
+        setTimeout(() => {
+          this._executeCleanup(t, wrappedT);
+        }, cleanupDelayMs);
+        return;
+      }
+      
+      // No delay - execute cleanup immediately
+      this._executeCleanup(t, wrappedT);
+    } finally {
+      // Remove from scheduling tracker
+      this._schedulingCleanup.delete(t);
+    }
   }
 
   /**
@@ -407,8 +429,19 @@ export class Arena {
     // For worker mode: just add to local queue and trigger worker processing
     if (this._cleanupWorker) {
       this._pendingCleanup.add([t, wrappedT]);
+      this._workerOperationCount++;
+      
+      // Check if worker should be restarted
+      const shouldRestart = this._options?.workerRestartAfter && 
+                           this._workerOperationCount >= this._options.workerRestartAfter;
+      
+      if (shouldRestart) {
+        console.log(`🔄 Auto-restarting worker after ${this._workerOperationCount} operations`);
+        this.restartCleanupWorker();
+      }
+      
       // Tell worker to process (without sending the actual objects)
-      this._cleanupWorker.postMessage({
+      this._cleanupWorker?.postMessage({
         type: 'triggerProcessing'
       });
       return;
@@ -581,6 +614,74 @@ export class Arena {
   }
 
   /**
+   * Restart the cleanup worker thread to refresh its state and clear any accumulated overhead.
+   */
+  restartCleanupWorker(): boolean {
+    if (!this._cleanupWorker) {
+      return false; // No worker to restart
+    }
+
+    try {
+      // Terminate the old worker
+      this._cleanupWorker.terminate();
+      this._cleanupWorker = undefined;
+      this._workerOperationCount = 0;
+      this._workerLastRestart = Date.now();
+
+      // Initialize a new worker
+      this._initWorkerCleanup();
+      
+      console.log('✓ Cleanup worker restarted successfully');
+      return true;
+    } catch (error) {
+      console.warn('Failed to restart cleanup worker:', error);
+      this._cleanupWorker = undefined;
+      return false;
+    }
+  }
+
+  /**
+   * Get worker performance statistics
+   */
+  getWorkerStats() {
+    return {
+      operationCount: this._workerOperationCount,
+      uptimeMs: Date.now() - this._workerLastRestart,
+      pendingCleanup: this._pendingCleanup.size,
+      delayedCleanup: this._delayedCleanup.size,
+      isWorkerActive: !!this._cleanupWorker
+    };
+  }
+
+  /**
+   * Check if worker might be having performance issues and suggest restart
+   */
+  shouldRestartWorker(): boolean {
+    if (!this._cleanupWorker) return false;
+    
+    const stats = this.getWorkerStats();
+    
+    // Restart if:
+    // 1. Too many pending items (might indicate worker is stuck)
+    // 2. Been running for a very long time
+    // 3. High operation count
+    return stats.pendingCleanup > 5000 ||
+           stats.uptimeMs > 30 * 60 * 1000 || // 30 minutes
+           stats.operationCount > 50000;
+  }
+
+  /**
+   * Force restart worker if performance issues are detected
+   */
+  checkAndRestartWorker(): boolean {
+    if (this.shouldRestartWorker()) {
+      console.log('🔧 Performance issues detected, restarting worker...');
+      return this.restartCleanupWorker();
+    }
+    return false;
+  }
+
+  /**
    * Set cleanup throttling dynamically based on server load
    */
   setCleanupThrottle(ms: number) {
@@ -698,7 +799,26 @@ export class Arena {
 
   _isMarshalable = (t: unknown): boolean | "json" => {
     const im = this._options?.isMarshalable;
-    return (typeof im === "function" ? im(this._unwrap(t)) : im) ?? "json";
+    if (typeof im === "function") {
+      return im(this._unwrap(t));
+    }
+    if (im !== undefined) {
+      return im;
+    }
+    
+    // Default behavior: functions should never use JSON marshalling
+    // Check the original target, not the unwrapped version
+    if (typeof t === "function") {
+      return true; // Use regular function marshalling
+    }
+    
+    // Also check unwrapped version for wrapped functions
+    const unwrapped = this._unwrap(t);
+    if (typeof unwrapped === "function") {
+      return true; // Use regular function marshalling
+    }
+    
+    return "json"; // Use JSON marshalling for objects
   };
 
   _marshalFind = (t: unknown) => {
@@ -748,6 +868,7 @@ export class Arena {
       pre: this._marshalPre,
       preApply: this._marshalPreApply,
       custom: this._options?.customMarshaller,
+      circularHandling: this._options?.circularReferenceHandling ?? 'replace',
     });
 
     return [handle, !syncEnabled || !this._map.hasHandle(handle)];
@@ -808,7 +929,8 @@ export class Arena {
       this._sync.add(unwrappedT);
       
       // If after exposed, schedule handle for cleanup after syncing once
-      if (this._afterExposed) {
+      // But ONLY if it's not already being scheduled to prevent infinite recursion
+      if (this._afterExposed && !this._schedulingCleanup.has(t)) {
         this._scheduleCleanup(t, wrappedT);
       }
     }
@@ -858,5 +980,230 @@ export class Arena {
 
   _unwrapHandle(target: QuickJSHandle): [QuickJSHandle, boolean] {
     return unwrapHandle(this.context, target, this._symbolHandle);
+  }
+
+  /**
+   * Get comprehensive diagnostic information about the Arena's current state
+   */
+  getDiagnostics() {
+    const handleCount = this._map.size;
+    const registeredCount = this._registeredMap.size;
+    const syncCount = this._sync.size;
+    const temporalSyncCount = this._temporalSync.size;
+    
+    return {
+      // Handle counts
+      handleCount,
+      registeredCount,
+      syncCount,
+      temporalSyncCount,
+      
+      // Cleanup status
+      pendingCleanup: this._pendingCleanup.size,
+      delayedCleanup: this._delayedCleanup.size,
+      isProcessingCleanup: this._isProcessingCleanup,
+      cleanupScheduled: this._cleanupScheduled,
+      cleanupDisabled: this._cleanupDisabled,
+      
+      // Worker status
+      workerStats: this.getWorkerStats(),
+      
+      // Memory pressure indicators
+      memoryPressure: this._calculateMemoryPressure(),
+      
+      // Performance metrics
+      lastCleanupTime: this._lastCleanupTime,
+      cleanupThrottleMs: this._cleanupThrottleMs,
+      
+      // Recommendations
+      recommendations: this._getPerformanceRecommendations()
+    };
+  }
+
+  /**
+   * Calculate memory pressure based on handle counts
+   */
+  private _calculateMemoryPressure() {
+    const totalHandles = this._map.size + this._registeredMap.size;
+    const pendingRatio = this._pendingCleanup.size / Math.max(totalHandles, 1);
+    
+    let level = 'low';
+    if (totalHandles > 10000) level = 'high';
+    else if (totalHandles > 5000) level = 'medium';
+    
+    if (pendingRatio > 0.5) level = 'critical';
+    
+    return {
+      level,
+      totalHandles,
+      pendingRatio: Math.round(pendingRatio * 100) / 100,
+      estimatedMemoryMB: Math.round((totalHandles * 0.1) * 100) / 100 // Rough estimate
+    };
+  }
+
+  /**
+   * Get performance recommendations based on current state
+   */
+  private _getPerformanceRecommendations() {
+    const recommendations = [];
+    const pressure = this._calculateMemoryPressure();
+    
+    if (pressure.level === 'critical') {
+      recommendations.push('🚨 CRITICAL: Consider calling arena.emergencyCleanup()');
+    }
+    
+    if (pressure.level === 'high') {
+      recommendations.push('⚠️ High memory usage: Consider more aggressive cleanup');
+    }
+    
+    if (this._pendingCleanup.size > 1000) {
+      recommendations.push('🔄 Large cleanup queue: Consider fastCleanup() or restart worker');
+    }
+    
+    if (this._sync.size > 1000) {
+      recommendations.push('📊 Many synced objects: Consider using ephemeralMode');
+    }
+    
+    if (!this._cleanupWorker) {
+      recommendations.push('🔧 Worker not active: Consider enabling useWorkerCleanup');
+    }
+    
+    return recommendations;
+  }
+
+  /**
+   * Emergency cleanup for critical situations
+   */
+  emergencyCleanup() {
+    console.log('🚨 EMERGENCY CLEANUP STARTED');
+    
+    // Stop all cleanup processing
+    this._cleanupDisabled = true;
+    this._isProcessingCleanup = false;
+    this._cleanupScheduled = false;
+    
+    // Clear all pending operations
+    this._pendingCleanup.clear();
+    this._delayedCleanup.clear();
+    
+    // Force dispose all handles in maps (aggressive!)
+    try {
+      // Dispose all registered handles
+      for (const [, handle] of this._registeredMap) {
+        if (handle?.alive) {
+          handle.dispose();
+        }
+      }
+      
+      // Dispose all mapped handles
+      for (const [, , , handle] of this._map) {
+        if (handle?.alive) {
+          handle.dispose();
+        }
+      }
+      
+      // Clear all maps
+      this._map.clear();
+      this._registeredMap.clear();
+      this._sync.clear();
+      this._temporalSync.clear();
+      
+    } catch (error) {
+      console.error('Error during emergency cleanup:', error);
+    }
+    
+    // Re-enable cleanup
+    this._cleanupDisabled = false;
+    
+    console.log('🚨 EMERGENCY CLEANUP COMPLETED');
+  }
+
+  /**
+   * Start periodic monitoring and auto-optimization
+   */
+     startAutoMonitoring(intervalMs = 30000) {
+    const monitoringInterval = setInterval(() => {
+      const diagnostics = this.getDiagnostics();
+      
+      // Log critical issues
+      if (diagnostics.memoryPressure.level === 'critical') {
+        console.log('🚨 CRITICAL MEMORY PRESSURE:', diagnostics);
+        this.emergencyCleanup();
+      } else if (diagnostics.memoryPressure.level === 'high') {
+        console.log('⚠️ High memory pressure:', diagnostics);
+        this.fastCleanup();
+      }
+      
+      // Auto-restart worker if needed
+      this.checkAndRestartWorker();
+      
+      // Log recommendations
+      if (diagnostics.recommendations.length > 0) {
+        console.log('💡 Performance recommendations:', diagnostics.recommendations);
+      }
+      
+    }, intervalMs);
+    
+    // Return function to stop monitoring
+    return () => clearInterval(monitoringInterval);
+  }
+
+  /**
+   * Stress test the arena to identify bottlenecks
+   */
+     async stressTest(iterations = 1000) {
+    console.log(`🧪 Starting stress test with ${iterations} iterations...`);
+    
+    const startTime = Date.now();
+    const startDiagnostics = this.getDiagnostics();
+    
+    for (let i = 0; i < iterations; i++) {
+      // Create objects similar to game entities
+      const entity: any = {
+        id: i,
+        name: `Entity${i}`,
+        children: [],
+        parent: null,
+        data: { x: Math.random() * 100, y: Math.random() * 100 }
+      };
+      
+      // Create circular references
+      entity.children.push({ parent: entity, id: i + 'child' });
+      
+      // Expose to VM
+      this.expose({ [`entity${i}`]: entity });
+      
+      // Evaluate some code
+      try {
+        this.evalCode(`entity${i}.data.x += 1`);
+      } catch (error: any) {
+        console.error(`Error in iteration ${i}:`, error.message);
+      }
+      
+      // Periodic cleanup to prevent complete breakdown
+      if (i % 100 === 0) {
+        await this.flushCleanup();
+        console.log(`✓ Completed ${i}/${iterations} iterations`);
+      }
+    }
+    
+    const endTime = Date.now();
+    const endDiagnostics = this.getDiagnostics();
+    
+    console.log('🧪 Stress test results:', {
+      duration: endTime - startTime,
+      avgTimePerIteration: (endTime - startTime) / iterations,
+      handlesCreated: endDiagnostics.handleCount - startDiagnostics.handleCount,
+      memoryPressureChange: {
+        before: startDiagnostics.memoryPressure,
+        after: endDiagnostics.memoryPressure
+      }
+    });
+    
+    return {
+      duration: endTime - startTime,
+      avgTimePerIteration: (endTime - startTime) / iterations,
+      diagnostics: endDiagnostics
+    };
   }
 }

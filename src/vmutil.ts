@@ -49,10 +49,53 @@ export function isHandleObject(ctx: QuickJSContext, h: QuickJSHandle): boolean {
   );
 }
 
-export function json(ctx: QuickJSContext, target: any): QuickJSHandle {
-  const json = JSON.stringify(target);
+export function json(ctx: QuickJSContext, target: any, circularHandling: 'replace' | 'ignore' | 'error' = 'replace'): QuickJSHandle {
+  let json: string;
+  try {
+    json = JSON.stringify(target, createCircularReplacer(circularHandling));
+  } catch (error) {
+    if (circularHandling === 'error') {
+      throw error; // Re-throw to preserve original behavior if requested
+    }
+    // If JSON.stringify still fails, return a safe fallback
+    json = JSON.stringify({
+      __error: "CircularReference",
+      __type: typeof target,
+      __constructor: target?.constructor?.name || "Unknown"
+    });
+  }
   if (!json) return ctx.undefined;
   return call(ctx, `JSON.parse`, undefined, ctx.newString(json));
+}
+
+/**
+ * Creates a replacer function that handles circular references
+ */
+function createCircularReplacer(handling: 'replace' | 'ignore' | 'error' = 'replace') {
+  const seen = new WeakSet();
+  return (key: string, value: any) => {
+    if (typeof value === "object" && value !== null) {
+      if (seen.has(value)) {
+        // Circular reference found
+        switch (handling) {
+          case 'ignore':
+            return undefined; // Remove circular references
+          case 'error':
+            throw new Error(`Converting circular structure to JSON at key: ${key}`);
+          case 'replace':
+          default:
+            return {
+              __circular: true,
+              __type: typeof value,
+              __constructor: value.constructor?.name || "Object",
+              __keys: Object.keys(value).slice(0, 5) // Show first 5 keys for debugging
+            };
+        }
+      }
+      seen.add(value);
+    }
+    return value;
+  };
 }
 
 export function consumeAll<T extends QuickJSHandle[], K>(handles: T, cb: (handles: T) => K): K {
