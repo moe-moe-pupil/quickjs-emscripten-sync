@@ -343,12 +343,12 @@ export class Arena {
         // Process this micro-chunk synchronously
         for (const [t, wrappedT] of microChunk) {
           const unwrappedT = this._unwrap(t);
-          if (this._sync.has(unwrappedT)) {
-            this._sync.delete(unwrappedT);
-            // Always use fastDelete for auto-cleanup to prevent blocking
-            this._map.fastDelete(wrappedT, false);
-            this.unregister(t, false);
-          }
+          // FIX: Clean up ALL scheduled handles, not just synced ones
+          this._sync.delete(unwrappedT); // Remove from sync (if present)
+          
+          // BALANCED FIX: Use fastDelete for VM handles but proper delete for registered ones
+          this._map.fastDelete(wrappedT, false); // Use fastDelete for VM objects to avoid disposal issues
+          this.unregister(t, true); // But properly dispose registered handles
         }
 
         currentIndex = endIndex;
@@ -804,12 +804,22 @@ export class Arena {
       // already registered
       if (unwrapped) unwrappedH.dispose();
       throw new Error("already registered");
-    } else if (sync) {
-      this._sync.add(unwrappedT);
-      
-      // If after exposed, schedule handle for cleanup after syncing once
-      if (this._afterExposed) {
-        this._scheduleCleanup(t, wrappedT);
+    } else {
+      if (sync) {
+        this._sync.add(unwrappedT);
+        // If after exposed, schedule handle for cleanup after syncing once
+        if (this._afterExposed) {
+          this._scheduleCleanup(t, wrappedT);
+        }
+      } else {
+        // FIX: For non-synced entities (like your game engine), schedule delayed cleanup
+        // This prevents immediate cleanup that interferes with ongoing evaluations
+        if (this._afterExposed) {
+          // Use a small delay to ensure the current evalCode completes first
+          setTimeout(() => {
+            this._scheduleCleanup(t, wrappedT);
+          }, 10); // 10ms delay
+        }
       }
     }
 

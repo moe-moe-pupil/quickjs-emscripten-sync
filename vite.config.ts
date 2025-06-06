@@ -47,5 +47,6 @@ export default defineConfig({
     coverage: {
       reporter: ["text", "json"],
     },
+    watch: false,
   },
 });
