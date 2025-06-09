@@ -1,53 +1,52 @@
 import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
 
-import { isES2015Class, isObject } from "../util";
 import { call } from "../vmutil";
-
-import marshalProperties from "./properties";
+import { Arena } from "..";
 
 export default function marshalFunction(
   ctx: QuickJSContext,
   target: unknown,
   marshal: (target: unknown) => QuickJSHandle,
   unmarshal: (handle: QuickJSHandle) => unknown,
-  preMarshal: (target: unknown, handle: QuickJSHandle) => QuickJSHandle | undefined,
-  preApply?: (target: Function, thisArg: unknown, args: unknown[]) => any,
+  _preMarshal: (target: unknown, handle: QuickJSHandle) => QuickJSHandle | undefined,
+  _preApply?: (target: Function, thisArg: unknown, args: unknown[]) => any,
+  arena?: Arena,
 ): QuickJSHandle | undefined {
   if (typeof target !== "function") return;
 
-  const raw = ctx
-    .newFunction(target.name, function (...argHandles) {
-      const that = unmarshal(this);
-      const args = argHandles.map(a => unmarshal(a));
+  console.log("marshalFunction", target.name, arena?._afterExposed);
+  // Direct function wrapping - minimal overhead
+  const raw = ctx.newFunction(target.name, function (...argHandles) {
+    // Direct argument conversion without intermediate processing
+    const that = unmarshal(this);
+    const args = argHandles.map(a => unmarshal(a));
 
-      if (isES2015Class(target) && isObject(that)) {
-        // Class constructors cannot be invoked without new expression, and new.target is not changed
-        const result = new target(...args);
-        Object.entries(result).forEach(([key, value]) => {
-          ctx.setProp(this, key, marshal(value));
-        });
-        return this;
-      }
+    // Call the host function directly
+    const result = target.apply(that, args);
 
-      return marshal(preApply ? preApply(target, that, args) : target.apply(that, args));
-    })
-    .consume(handle2 =>
-      // fucntions created by vm.newFunction are not callable as a class constrcutor
-      call(
-        ctx,
-        `Cls => {
-          const fn = function(...args) { return Cls.apply(this, args); };
-          fn.name = Cls.name;
-          fn.length = Cls.length;
-          return fn;
-        }`,
-        undefined,
-        handle2,
-      ),
-    );
+    // Marshal result back to VM
+    return marshal(result);
+  });
 
-  const handle = preMarshal(target, raw) ?? raw;
-  marshalProperties(ctx, target, raw, marshal);
+  if (arena?._afterExposed) {
+    setTimeout(() => {
+      raw.dispose();
+    }, 1000);
+  }
+  // Make function constructable if needed (class support)
+  // const constructableFunction = raw.consume(handle2 =>
+  //   call(
+  //     ctx,
+  //     `Cls => {
+  //       const fn = function(...args) { return Cls.apply(this, args); };
+  //       fn.name = Cls.name;
+  //       fn.length = Cls.length;
+  //       return fn;
+  //     }`,
+  //     undefined,
+  //     handle2,
+  //   ),
+  // );
 
-  return handle;
+  return raw;
 }

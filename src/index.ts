@@ -81,7 +81,7 @@ export class Arena {
   _symbolHandle: QuickJSHandle;
   _options?: Options;
   // private _afterExposedData: Record<string, any> = {};
-  private _afterExposed = false;
+  _afterExposed = false;
   private _pendingCleanup: Set<[any, any]> = new Set();
   private _cleanupScheduled = false;
   private _isProcessingCleanup = false;
@@ -748,7 +748,7 @@ export class Arena {
       pre: this._marshalPre,
       preApply: this._marshalPreApply,
       custom: this._options?.customMarshaller,
-    });
+    }, this);
 
     return [handle, !syncEnabled || !this._map.hasHandle(handle)];
   };
