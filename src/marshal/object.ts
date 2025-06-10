@@ -39,9 +39,10 @@ export default function marshalObject(
         prototypeHandle.dispose();
       }
     }, 1000);
-  } else {
+  }
+  // console.log("target", (target as any)._category);
+  if (!arena?._afterExposed || (target as any)._category === 'player' || (target as any).name || (target as any).x) {
     marshalProperties(ctx, target, raw, marshal);
   }
-
   return handle;
 }
