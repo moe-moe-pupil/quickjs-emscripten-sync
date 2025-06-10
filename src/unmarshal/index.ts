@@ -5,6 +5,7 @@ import unmarshalFunction from "./function";
 import unmarshalObject from "./object";
 import unmarshalPrimitive from "./primitive";
 import unmarshalPromise from "./promise";
+import { Arena } from "..";
 
 export type Options = {
   ctx: QuickJSContext;
@@ -13,6 +14,7 @@ export type Options = {
   find: (handle: QuickJSHandle) => unknown | undefined;
   pre: <T = unknown>(target: T, handle: QuickJSHandle) => T | undefined;
   custom?: Iterable<(obj: QuickJSHandle, ctx: QuickJSContext) => any>;
+  arena?: Arena;
 };
 
 export function unmarshal(handle: QuickJSHandle, options: Options): any {
@@ -20,7 +22,7 @@ export function unmarshal(handle: QuickJSHandle, options: Options): any {
   return result;
 }
 
-function unmarshalInner(handle: QuickJSHandle, options: Options): [any, boolean] {
+function unmarshalInner(handle: QuickJSHandle, options: Options, arena?: Arena): [any, boolean] {
   const { ctx, marshal, find, pre } = options;
 
   {
@@ -35,12 +37,12 @@ function unmarshalInner(handle: QuickJSHandle, options: Options): [any, boolean]
     }
   }
 
-  const unmarshal2 = (h: QuickJSHandle) => unmarshalInner(h, options);
+  const unmarshal2 = (h: QuickJSHandle) => unmarshalInner(h, options, arena);
 
   const result =
     unmarshalCustom(ctx, handle, pre, [...defaultCustom, ...(options.custom ?? [])]) ??
     unmarshalPromise(ctx, handle, marshal, pre) ??
-    unmarshalFunction(ctx, handle, marshal, unmarshal2, pre) ??
+    unmarshalFunction(ctx, handle, marshal, unmarshal2, pre, arena) ??
     unmarshalObject(ctx, handle, unmarshal2, pre);
 
   return [result, false];

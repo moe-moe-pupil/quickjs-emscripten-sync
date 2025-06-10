@@ -28,10 +28,20 @@ export default function marshalObject(
   }
 
   if (arena?._afterExposed) {
-
+    setTimeout(() => {
+      if (raw.alive) {
+        raw.dispose();
+      }
+      if (handle.alive) {
+        handle.dispose();
+      }
+      if (prototypeHandle && prototypeHandle.alive) {
+        prototypeHandle.dispose();
+      }
+    }, 1000);
   } else {
     marshalProperties(ctx, target, raw, marshal);
-
   }
+
   return handle;
 }

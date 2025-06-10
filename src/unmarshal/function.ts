@@ -3,6 +3,7 @@ import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
 import { call, mayConsumeAll } from "../vmutil";
 
 import unmarshalProperties from "./properties";
+import { Arena } from "..";
 
 export default function unmarshalFunction(
   ctx: QuickJSContext,
@@ -11,6 +12,7 @@ export default function unmarshalFunction(
   marshal: (value: unknown) => [QuickJSHandle, boolean],
   unmarshal: (handle: QuickJSHandle) => [unknown, boolean],
   preUnmarshal: <T>(target: T, handle: QuickJSHandle) => T | undefined,
+  arena?: Arena,
 ): Function | undefined {
   if (ctx.typeof(handle) !== "function") return;
 
@@ -37,7 +39,7 @@ export default function unmarshalFunction(
   };
 
   const func = preUnmarshal(raw, handle) ?? raw;
-  unmarshalProperties(ctx, handle, raw, unmarshal);
+  unmarshalProperties(ctx, handle, raw, unmarshal, arena);
 
   return func;
 }

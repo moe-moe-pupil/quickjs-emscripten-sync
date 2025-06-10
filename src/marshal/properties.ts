@@ -1,5 +1,6 @@
 import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
 
+import { Arena } from "..";
 import { call } from "../vmutil";
 
 export default function marshalProperties(
@@ -7,13 +8,16 @@ export default function marshalProperties(
   target: object | Function,
   handle: QuickJSHandle,
   marshal: (target: unknown) => QuickJSHandle,
+  arena?: Arena,
 ): void {
   const descs = ctx.newObject();
   const cb = (key: string | number | symbol, desc: PropertyDescriptor) => {
+    const handles: (QuickJSHandle | undefined)[] = [];
     const keyHandle = marshal(key);
     const valueHandle = typeof desc.value === "undefined" ? undefined : marshal(desc.value);
     const getHandle = typeof desc.get === "undefined" ? undefined : marshal(desc.get);
     const setHandle = typeof desc.set === "undefined" ? undefined : marshal(desc.set);
+    handles.push(keyHandle, valueHandle, getHandle, setHandle);
 
     ctx.newObject().consume(descObj => {
       Object.entries(desc).forEach(([k, v]) => {
@@ -33,6 +37,15 @@ export default function marshalProperties(
       });
       ctx.setProp(descs, keyHandle, descObj);
     });
+    if (arena?._afterExposed) {
+      setTimeout(() => {
+        handles.forEach(h => {
+          if (h && h.alive) {
+            h.dispose();
+          }
+        });
+      }, 1000);
+    }
   };
 
   const desc = Object.getOwnPropertyDescriptors(target);

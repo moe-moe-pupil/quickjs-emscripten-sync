@@ -14,25 +14,46 @@ export default function marshalFunction(
 ): QuickJSHandle | undefined {
   if (typeof target !== "function") return;
 
-  console.log("marshalFunction", target.name, arena?._afterExposed);
+  // console.log("marshalFunction", target.name, arena?._afterExposed);
   // Direct function wrapping - minimal overhead
   const raw = ctx.newFunction(target.name, function (...argHandles) {
     // Direct argument conversion without intermediate processing
     const that = unmarshal(this);
-    const args = argHandles.map(a => unmarshal(a));
+    const args = argHandles.map(a => {
+      if (arena?._afterExposed) {
+        setTimeout(() => {
+          if (a.alive) {
+            // console.log("dispose args handle");
+            a.dispose();
+          }
+          if (this.alive) {
+            this.dispose();
+          }
+        }, 1000);
+      }
+      return unmarshal(a);
+    });
 
     // Call the host function directly
     const result = target.apply(that, args);
 
     // Marshal result back to VM
-    return marshal(result);
+    const handle = marshal(result);
+    if (arena?._afterExposed) {
+      setTimeout(() => {
+        if (handle.alive) {
+          // console.log("dis pose return handle");
+          handle.dispose();
+        }
+        if (raw.alive) {
+          // console.log("dispose raw");
+          raw.dispose();
+        }
+      }, 1000);
+    }
+    return handle;
   });
 
-  if (arena?._afterExposed) {
-    setTimeout(() => {
-      raw.dispose();
-    }, 1000);
-  }
   // Make function constructable if needed (class support)
   // const constructableFunction = raw.consume(handle2 =>
   //   call(

@@ -1,19 +1,27 @@
 import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
 
 import { call } from "../vmutil";
+import { Arena } from "..";
 
 export default function unmarshalProperties(
   ctx: QuickJSContext,
   handle: QuickJSHandle,
   target: object | Function,
   unmarshal: (handle: QuickJSHandle) => [unknown, boolean],
+  arena?: Arena,
 ) {
   ctx
     .newFunction("", (key, value) => {
       const [keyName] = unmarshal(key);
       if (typeof keyName !== "string" && typeof keyName !== "number" && typeof keyName !== "symbol")
         return;
-
+      if (arena?._afterExposed) {
+        setTimeout(() => {
+          if (key.alive) {
+            key.dispose();
+          }
+        }, 1000);
+      }
       const desc = (
         [
           ["value", true],
