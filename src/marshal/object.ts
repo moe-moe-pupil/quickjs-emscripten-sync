@@ -41,7 +41,7 @@ export default function marshalObject(
     }, 1000);
   }
   // console.log("target", (target as any)._category);
-  if (!arena?._afterExposed || (target as any)._category === 'player' || (target as any).name || (target as any).x) {
+  if (!arena?._afterExposed || (target as any)._from === 'param') {
     marshalProperties(ctx, target, raw, marshal);
   }
   return handle;
