@@ -37,15 +37,15 @@ export default function marshalProperties(
       });
       ctx.setProp(descs, keyHandle, descObj);
     });
-    if (arena?._afterExposed) {
-      setTimeout(() => {
-        handles.forEach(h => {
-          if (h && h.alive) {
-            h.dispose();
-          }
-        });
-      }, 1000);
-    }
+    // if (arena?._afterExposed) {
+    //   setTimeout(() => {
+    //     handles.forEach(h => {
+    //       if (h && h.alive) {
+    //         h.dispose();
+    //       }
+    //     });
+    //   }, 1000);
+    // }
   };
 
   const desc = Object.getOwnPropertyDescriptors(target);
