@@ -6,6 +6,7 @@ import marshalJSON from "./json";
 import marshalObject from "./object";
 import marshalPrimitive from "./primitive";
 import marshalPromise from "./promise";
+import { Arena } from "..";
 
 export type Options = {
   ctx: QuickJSContext;
@@ -21,7 +22,7 @@ export type Options = {
   custom?: Iterable<(obj: unknown, ctx: QuickJSContext) => QuickJSHandle | undefined>;
 };
 
-export function marshal(target: unknown, options: Options): QuickJSHandle {
+export function marshal(target: unknown, options: Options, arena: Arena): QuickJSHandle {
   const { ctx, unmarshal, isMarshalable, find, pre } = options;
 
   {
@@ -47,12 +48,12 @@ export function marshal(target: unknown, options: Options): QuickJSHandle {
     return marshalJSON(ctx, target, pre2);
   }
 
-  const marshal2 = (t: unknown) => marshal(t, options);
+  const marshal2 = (t: unknown) => marshal(t, options, arena);
   return (
     marshalCustom(ctx, target, pre2, [...defaultCustom, ...(options.custom ?? [])]) ??
     marshalPromise(ctx, target, marshal2, pre2) ??
     marshalFunction(ctx, target, marshal2, unmarshal, pre2, options.preApply) ??
-    marshalObject(ctx, target, marshal2, pre2) ??
+    marshalObject(ctx, target, marshal2, pre2, arena) ??
     ctx.undefined
   );
 }

@@ -68,6 +68,7 @@ export class Arena {
   _symbol = Symbol();
   _symbolHandle: QuickJSHandle;
   _options?: Options;
+  _afterExposed = false;
 
   /** Constructs a new Arena instance. It requires a quickjs-emscripten context initialized with `quickjs.newContext()`. */
   constructor(ctx: QuickJSContext, options?: Options) {
@@ -128,6 +129,7 @@ export class Arena {
         this.context.setProp(this.context.global, key, handle);
       });
     }
+    this._afterExposed = true;
   }
 
   /**
@@ -261,7 +263,7 @@ export class Arena {
       pre: this._marshalPre,
       preApply: this._marshalPreApply,
       custom: this._options?.customMarshaller,
-    });
+    }, this);
 
     const syncEnabled = this._options?.syncEnabled ?? true;
 
