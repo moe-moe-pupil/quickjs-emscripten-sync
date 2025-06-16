@@ -19,20 +19,7 @@ export default function marshalFunction(
   const raw = ctx.newFunction(target.name, function (...argHandles) {
     // Direct argument conversion without intermediate processing
     const that = unmarshal(this);
-    const args = argHandles.map(a => {
-      if (arena?._afterExposed) {
-        setTimeout(() => {
-          if (a.alive) {
-            // console.log("dispose args handle");
-            a.dispose();
-          }
-          if (this.alive) {
-            this.dispose();
-          }
-        }, 1000);
-      }
-      return unmarshal(a);
-    });
+    const args = argHandles.map(unmarshal);
 
     // Call the host function directly
     const result = target.apply(that, args);
