@@ -17,7 +17,7 @@ export default function marshalProperties(
     const valueHandle = typeof desc.value === "undefined" ? undefined : marshal(desc.value);
     const getHandle = typeof desc.get === "undefined" ? undefined : marshal(desc.get);
     const setHandle = typeof desc.set === "undefined" ? undefined : marshal(desc.set);
-    handles.push(keyHandle, valueHandle, getHandle, setHandle);
+    handles.push(keyHandle, valueHandle, setHandle, handle);
 
     ctx.newObject().consume(descObj => {
       Object.entries(desc).forEach(([k, v]) => {
@@ -25,34 +25,41 @@ export default function marshalProperties(
           k === "value"
             ? valueHandle
             : k === "get"
-            ? getHandle
-            : k === "set"
-            ? setHandle
-            : v
-            ? ctx.true
-            : ctx.false;
+              ? getHandle
+              : k === "set"
+                ? setHandle
+                : v
+                  ? ctx.true
+                  : ctx.false;
         if (v2) {
-          ctx.setProp(descObj, k, v2);
+          if (!arena?._afterExposed) {
+
+            ctx.setProp(descObj, k, v2);
+          }
         }
       });
-      ctx.setProp(descs, keyHandle, descObj);
+      handles.push(descObj);
+      if (!arena?._afterExposed) {
+        ctx.setProp(descs, keyHandle, descObj);
+      }
     });
-    // if (arena?._afterExposed) {
-    //   setTimeout(() => {
-    //     handles.forEach(h => {
-    //       if (h && h.alive) {
-    //         h.dispose();
-    //       }
-    //     });
-    //   }, 1000);
-    // }
+    if (arena?._afterExposed) {
+      setTimeout(() => {
+        handles.forEach(h => {
+          if (h && h.alive) {
+            h.dispose();
+          }
+        });
+      }, 1000);
+    }
   };
 
   const desc = Object.getOwnPropertyDescriptors(target);
   Object.entries(desc).forEach(([k, v]) => cb(k, v));
   Object.getOwnPropertySymbols(desc).forEach(k => cb(k, (desc as any)[k]));
 
-  call(ctx, `Object.defineProperties`, undefined, handle, descs).dispose();
-
+  if (!arena?._afterExposed) {
+    call(ctx, `Object.defineProperties`, undefined, handle, descs).dispose();
+  }
   descs.dispose();
 }

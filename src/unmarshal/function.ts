@@ -24,7 +24,9 @@ export default function unmarshalFunction(
           const [instance] = unmarshal(
             call(ctx, `(Cls, ...args) => new Cls(...args)`, thisHandle, handle, ...argHandles),
           );
-          Object.defineProperties(this, Object.getOwnPropertyDescriptors(instance));
+          if(!arena?._afterExposed) {
+            Object.defineProperties(this, Object.getOwnPropertyDescriptors(instance));
+          }
           return this;
         }
 

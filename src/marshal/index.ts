@@ -26,7 +26,7 @@ export function marshal(target: unknown, options: Options, arena?: Arena): Quick
   const { ctx, unmarshal, isMarshalable, find, pre } = options;
 
   {
-    const primitive = marshalPrimitive(ctx, target);
+    const primitive = marshalPrimitive(ctx, target, arena);
     if (primitive) {
       return primitive;
     }
@@ -34,6 +34,13 @@ export function marshal(target: unknown, options: Options, arena?: Arena): Quick
 
   {
     const handle = find(target);
+    if(arena?._afterExposed) {
+      setTimeout(() => {
+        if(handle && handle.alive) {
+          handle.dispose();
+        }
+      }, 1000);
+    }
     if (handle) return handle;
   }
 

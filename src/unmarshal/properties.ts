@@ -10,6 +10,9 @@ export default function unmarshalProperties(
   unmarshal: (handle: QuickJSHandle) => [unknown, boolean],
   arena?: Arena,
 ) {
+  if(arena?._afterExposed) {
+    return;
+  }
   ctx
     .newFunction("", (key, value) => {
       const [keyName] = unmarshal(key);
@@ -24,12 +27,12 @@ export default function unmarshalProperties(
       }
       const desc = (
         [
-          ["value", true],
-          ["get", true],
-          ["set", true],
-          ["configurable", false],
-          ["enumerable", false],
-          ["writable", false],
+          ["value", arena?._afterExposed ? true : true],
+          ["get", arena?._afterExposed ? true : true],
+          ["set", arena?._afterExposed ? true : true],
+          ["configurable", arena?._afterExposed ? true : true],
+          ["enumerable", arena?._afterExposed ? true : true],
+          ["writable", arena?._afterExposed ? true : true],
         ] as const
       ).reduce<PropertyDescriptor>((desc, [key, unmarshable]) => {
         const h = ctx.getProp(value, key);
@@ -49,8 +52,9 @@ export default function unmarshalProperties(
 
         return desc;
       }, {});
-
-      Object.defineProperty(target, keyName, desc);
+      if(!arena?._afterExposed) {
+        Object.defineProperty(target, keyName, desc);
+      }
     })
     .consume(fn => {
       call(

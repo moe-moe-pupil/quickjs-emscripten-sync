@@ -106,10 +106,10 @@ export class Arena {
     this._options = options;
     this._cleanupThrottleMs = options?.cleanupThrottleMs ?? 0;
     this._symbolHandle = ctx.unwrapResult(ctx.evalCode(`Symbol()`));
-    this._map = new VMMap(ctx);
-    this._registeredMap = new VMMap(ctx);
+    this._map = new VMMap(ctx, this);
+    this._registeredMap = new VMMap(ctx, this);
     this.registerAll(options?.registeredObjects ?? defaultRegisteredObjects);
-    
+
     // Initialize worker thread if enabled
     if (options?.useWorkerCleanup) {
       this._initWorkerCleanup();
@@ -125,10 +125,10 @@ export class Arena {
       const { Worker } = require('worker_threads');
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const path = require('path');
-      
+
       const workerPath = path.resolve(__dirname, 'cleanup-worker.js');
       this._cleanupWorker = new Worker(workerPath);
-      
+
       // Handle messages from worker
       this._cleanupWorker.on('message', (message: any) => {
         switch (message.type) {
@@ -143,14 +143,14 @@ export class Arena {
             break;
         }
       });
-      
+
       // Handle worker errors
       this._cleanupWorker.on('error', (error: any) => {
         console.error('Cleanup worker error:', error);
         // Fallback to single-threaded cleanup
         this._cleanupWorker = undefined;
       });
-      
+
     } catch (error) {
       console.warn('Failed to initialize cleanup worker, falling back to single-threaded:', error);
       this._cleanupWorker = undefined;
@@ -163,7 +163,7 @@ export class Arena {
   private _processWorkerBatch() {
     const BATCH_SIZE = 5;
     const batch = Array.from(this._pendingCleanup).slice(0, BATCH_SIZE);
-    
+
     for (const [t, wrappedT] of batch) {
       try {
         const unwrappedT = this._unwrap(t);
@@ -194,7 +194,7 @@ export class Arena {
   private _processAllPending() {
     const toCleanup = Array.from(this._pendingCleanup);
     this._pendingCleanup.clear();
-    
+
     for (const [t, wrappedT] of toCleanup) {
       try {
         const unwrappedT = this._unwrap(t);
@@ -218,10 +218,10 @@ export class Arena {
       this._cleanupWorker.terminate();
       this._cleanupWorker = undefined;
     }
-    
+
     // Clear delayed cleanup tracking
     this._delayedCleanup.clear();
-    
+
     // Force synchronous cleanup before disposing
     this._disposeSync();
     this._map.dispose();
@@ -267,12 +267,12 @@ export class Arena {
   evalCode<T = any>(code: string): T {
     const handle = this.context.evalCode(code);
     const result = this._unwrapResultAndUnmarshal(handle);
-    
+
     // Auto-cleanup in ephemeral mode (non-blocking)
     if (this._options?.ephemeralMode) {
       this.flushCleanup(); // Don't await - let it run in background
     }
-    
+
     return result;
   }
 
@@ -283,12 +283,12 @@ export class Arena {
   async evalCodeAsync<T = any>(code: string): Promise<T> {
     const handle = this.context.evalCode(code);
     const result = this._unwrapResultAndUnmarshal(handle);
-    
+
     // Auto-cleanup in ephemeral mode (blocking)
     if (this._options?.ephemeralMode) {
       await this.flushCleanup();
     }
-    
+
     return result;
   }
 
@@ -335,7 +335,7 @@ export class Arena {
 
     const processMicroChunk = () => {
       const startTime = performance.now();
-      
+
       while (currentIndex < toCleanup.length) {
         const endIndex = Math.min(currentIndex + MICRO_CHUNK_SIZE, toCleanup.length);
         const microChunk = toCleanup.slice(currentIndex, endIndex);
@@ -345,7 +345,7 @@ export class Arena {
           const unwrappedT = this._unwrap(t);
           // FIX: Clean up ALL scheduled handles, not just synced ones
           this._sync.delete(unwrappedT); // Remove from sync (if present)
-          
+
           // BALANCED FIX: Use fastDelete for VM handles but proper delete for registered ones
           this._map.fastDelete(wrappedT, false); // Use fastDelete for VM objects to avoid disposal issues
           this.unregister(t, true); // But properly dispose registered handles
@@ -379,12 +379,12 @@ export class Arena {
    */
   private _scheduleCleanup(t: any, wrappedT: any) {
     const cleanupDelayMs = this._options?.cleanupDelayMs ?? 0;
-    
+
     // Record when this handle was created for delayed cleanup
     if (cleanupDelayMs > 0) {
       this._delayedCleanup.set(t, Date.now());
     }
-    
+
     // If there's a delay, schedule cleanup for later
     if (cleanupDelayMs > 0) {
       setTimeout(() => {
@@ -392,7 +392,7 @@ export class Arena {
       }, cleanupDelayMs);
       return;
     }
-    
+
     // No delay - execute cleanup immediately
     this._executeCleanup(t, wrappedT);
   }
@@ -403,7 +403,7 @@ export class Arena {
   private _executeCleanup(t: any, wrappedT: any) {
     // Remove from delayed cleanup tracking
     this._delayedCleanup.delete(t);
-    
+
     // For worker mode: just add to local queue and trigger worker processing
     if (this._cleanupWorker) {
       this._pendingCleanup.add([t, wrappedT]);
@@ -413,23 +413,23 @@ export class Arena {
       });
       return;
     }
-    
+
     // Fallback to single-threaded cleanup
     this._pendingCleanup.add([t, wrappedT]);
-    
+
     // Auto-adjust cleanup throttling based on load
     this._autoAdjustCleanup();
-    
+
     // Don't schedule any cleanup if deferAllCleanup is enabled or cleanup is disabled
     if (this._options?.deferAllCleanup || this._cleanupDisabled) {
       return;
     }
-    
+
     if (!this._cleanupScheduled && !this._isProcessingCleanup) {
       // Check throttling
       const now = Date.now();
       const timeSinceLastCleanup = now - this._lastCleanupTime;
-      
+
       if (this._cleanupThrottleMs > 0 && timeSinceLastCleanup < this._cleanupThrottleMs) {
         // Throttled - schedule for later
         const delay = this._cleanupThrottleMs - timeSinceLastCleanup;
@@ -440,7 +440,7 @@ export class Arena {
         }, delay);
         return;
       }
-      
+
       this._scheduleCleanupNow();
     }
   }
@@ -448,7 +448,7 @@ export class Arena {
   private _scheduleCleanupNow() {
     this._cleanupScheduled = true;
     this._lastCleanupTime = Date.now();
-    
+
     if (this._options?.lazyCleanup) {
       // In lazy mode, defer cleanup to when the event loop is truly idle
       setTimeout(() => this._processPendingCleanup(), 100);
@@ -494,6 +494,14 @@ export class Arena {
    */
   register(target: any, handleOrCode: QuickJSHandle | string) {
     if (this._registeredMap.has(target)) return;
+    if (this._afterExposed) {
+      setTimeout(() => {
+        if (typeof handleOrCode !== 'string' && handleOrCode.alive) {
+          handleOrCode.dispose();
+        }
+      }, 1000);
+      return;
+    }
     const handle =
       typeof handleOrCode === "string"
         ? this._unwrapResult(this.context.evalCode(handleOrCode))
@@ -598,7 +606,7 @@ export class Arena {
    */
   private _autoAdjustCleanup() {
     const pendingCount = this._pendingCleanup.size;
-    
+
     if (pendingCount > 1000) {
       // High load - throttle more aggressively
       this._cleanupThrottleMs = 100;
@@ -679,7 +687,7 @@ export class Arena {
           setImmediate(waitForCleanup);
         }
       };
-      
+
       waitForCleanup();
     });
   }
@@ -717,8 +725,26 @@ export class Arena {
     mode: true | "json" | undefined,
   ): Wrapped<QuickJSHandle> | undefined => {
     if (mode === "json") return;
-    // console.log('_marshalPre', this._options?.syncEnabled);
-    return this._register(t, handleFrom(h), this._map, this._options?.syncEnabled)?.[1];
+    if (this._afterExposed) {
+      setTimeout(() => {
+        const handle = handleFrom(h);
+        if (handle && handle.alive) {
+          handle.dispose?.();
+        }
+        if (h && h.alive) {
+          h.dispose?.();
+        }
+      }, 1000);
+    }
+    const res = this._register(t, handleFrom(h), this._map, this._options?.syncEnabled)?.[1];
+    if(this._afterExposed) {
+      setTimeout(() => {
+        if(res && res.alive) {
+          res.dispose();
+        }
+      }, 1000);
+    }
+    return res;
   };
 
   _marshalPreApply = (target: Function, that: unknown, args: unknown[]): void => {
@@ -749,12 +775,33 @@ export class Arena {
       preApply: this._marshalPreApply,
       custom: this._options?.customMarshaller,
     }, this);
-
+    if (this._afterExposed) {
+      setTimeout(() => {
+        if (this._map.hasHandle(handle)) {
+          this._map.delete(handle, true);
+        }
+      }, 1000);
+    }
     return [handle, !syncEnabled || !this._map.hasHandle(handle)];
   };
 
   _preUnmarshal = (t: any, h: QuickJSHandle): Wrapped<any> => {
-    return this._register(t, h, undefined, this._options?.syncEnabled ?? true)?.[0];
+    setTimeout(() => {
+      if (this._afterExposed) {
+        if (h.alive) {
+          h.dispose?.();
+        }
+      }
+    }, 1000);
+    const res = this._register(t, h, undefined, this._options?.syncEnabled ?? true)?.[0];
+    if (this._afterExposed) {
+      setTimeout(() => {
+        if (res?.alive) {
+          res.dispose?.();
+        }
+      }, 1000);
+    }
+    return res;
   };
 
   _unmarshalFind = (h: QuickJSHandle): unknown => {
@@ -762,15 +809,22 @@ export class Arena {
   };
 
   _unmarshal = (handle: QuickJSHandle): any => {
-    // console.log("unmarshal!!!");
     const registered = this._registeredMap.getByHandle(handle);
     if (typeof registered !== "undefined") {
-      // console.log("registered!!!");
       return registered;
     }
 
-    // console.log("unregistered!!!");
     const [wrappedHandle] = this._wrapHandle(handle);
+    if (this._afterExposed) {
+      setTimeout(() => {
+        if (wrappedHandle && wrappedHandle.alive) {
+          wrappedHandle.dispose?.();
+        }
+        if (handle && handle.alive) {
+          handle.dispose?.();
+        }
+      }, 1000);
+    }
     return unmarshal(wrappedHandle ?? handle, {
       ctx: this.context,
       marshal: this._marshal,
@@ -800,6 +854,16 @@ export class Arena {
     const [unwrappedH, unwrapped] = this._unwrapHandle(h);
 
     const res = map.set(wrappedT, wrappedH, unwrappedT, unwrappedH);
+    if(this._afterExposed) {
+      setTimeout(() => {
+        if(h && h.alive) {
+          h.dispose();
+        }
+        if(unwrappedH && unwrappedH.alive) {
+          unwrappedH.dispose();
+        }
+      }, 1000);
+    }
     if (!res) {
       // already registered
       if (unwrapped) unwrappedH.dispose();
@@ -854,7 +918,7 @@ export class Arena {
   };
 
   _wrapHandle(handle: QuickJSHandle): [Wrapped<QuickJSHandle> | undefined, boolean] {
-    return wrapHandle(
+    const res = wrapHandle(
       this.context,
       handle,
       this._symbol,
@@ -864,9 +928,28 @@ export class Arena {
       this._options?.isHandleWrappable,
       this._options?.syncEnabled ?? true,
     );
+    if (this._afterExposed) {
+      setTimeout(() => {
+        if (res[0] && res[0].alive) {
+          res[0].dispose?.();
+        }
+        if (handle && handle.alive) {
+          handle.dispose?.();
+        }
+      }, 1000);
+    }
+    return res;
   }
 
   _unwrapHandle(target: QuickJSHandle): [QuickJSHandle, boolean] {
-    return unwrapHandle(this.context, target, this._symbolHandle);
+    const res = unwrapHandle(this.context, target, this._symbolHandle);
+    if (this._afterExposed) {
+      setTimeout(() => {
+        if (res[0] && res[0].alive) {
+          res[0].dispose?.();
+        }
+      }, 1000);
+    }
+    return res;
   }
 }

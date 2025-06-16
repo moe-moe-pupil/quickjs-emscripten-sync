@@ -1,5 +1,6 @@
 import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
 
+import type { Arena } from "..";
 import { call } from "../vmutil";
 
 import unmarshalProperties from "./properties";
@@ -9,7 +10,11 @@ export default function unmarshalObject(
   handle: QuickJSHandle,
   unmarshal: (handle: QuickJSHandle) => [unknown, boolean],
   preUnmarshal: <T>(target: T, handle: QuickJSHandle) => T | undefined,
+  arena?: Arena,
 ): object | undefined {
+  if (arena?._afterExposed) {
+    return;
+  }
   if (
     ctx.typeof(handle) !== "object" ||
     // null check
@@ -39,6 +44,7 @@ export default function unmarshalObject(
     Object.setPrototypeOf(obj, prototype);
   }
 
+  
   unmarshalProperties(ctx, handle, raw, unmarshal);
 
   return obj;

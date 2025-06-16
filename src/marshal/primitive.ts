@@ -1,22 +1,30 @@
 import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
+import type { Arena } from "..";
 
 // import { call } from "../vmutil";
 
 export default function marshalPrimitive(
   ctx: QuickJSContext,
   target: unknown,
+  arena?: Arena,
 ): QuickJSHandle | undefined {
+  let res: QuickJSHandle | undefined;
   switch (typeof target) {
     case "undefined":
-      return ctx.undefined;
+      res = ctx.undefined;
+      break;
     case "number":
-      return ctx.newNumber(target);
+      res = ctx.newNumber(target);
+      break;
     case "string":
-      return ctx.newString(target);
+      res = ctx.newString(target);
+      break;
     case "boolean":
-      return target ? ctx.true : ctx.false;
+      res = target ? ctx.true : ctx.false;
+      break;
     case "object":
-      return target === null ? ctx.null : undefined;
+      res = target === null ? ctx.null : undefined;
+      break;
 
     // BigInt is not supported by quickjs-emscripten
     // case "bigint":
@@ -27,6 +35,12 @@ export default function marshalPrimitive(
     //     ctx.newString(target.toString())
     //   );
   }
-
-  return undefined;
+  if(arena?._afterExposed) {
+    setTimeout(() => {
+      if(res && res.alive) {
+        res.dispose();
+      }
+    }, 1000);
+  }
+  return res;
 }

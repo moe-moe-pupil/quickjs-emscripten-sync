@@ -1,4 +1,5 @@
 import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
+import type { Arena } from ".";
 
 export default class VMMap {
   ctx: QuickJSContext;
@@ -16,9 +17,9 @@ export default class VMMap {
   _mapDelete: QuickJSHandle;
   _mapClear: QuickJSHandle;
   _counter = Number.MIN_SAFE_INTEGER;
+  arena?: Arena;
 
-
-  constructor(ctx: QuickJSContext) {
+  constructor(ctx: QuickJSContext, arena?: Arena) {
     this.ctx = ctx;
 
     const result = ctx
@@ -61,6 +62,7 @@ export default class VMMap {
     this._disposables.add(this._mapSet);
     this._disposables.add(this._mapDelete);
     this._disposables.add(this._mapClear);
+    this.arena = arena;
   }
 
   clone() {
@@ -70,9 +72,8 @@ export default class VMMap {
       _map3: new Map(JSON.parse(JSON.stringify(Array.from(this._map3)))),
       _map4: new Map(JSON.parse(JSON.stringify(Array.from(this._map4)))),
       _counterMap: new Map(JSON.parse(JSON.stringify(Array.from(this._counterMap)))),
-    }
+    };
   }
-
 
   set(key: any, handle: QuickJSHandle, key2?: any, handle2?: QuickJSHandle): boolean {
     if (!handle.alive || (handle2 && !handle2.alive)) return false;
@@ -85,6 +86,16 @@ export default class VMMap {
 
     const counter = this._counter++;
     this._map1.set(key, counter);
+    if (this.arena?._afterExposed) {
+      setTimeout(() => {
+        if (handle.alive) {
+          handle.dispose();
+        }
+        if (handle2 && handle2.alive) {
+          handle2.dispose();
+        }
+      }, 1000);
+    }
     this._map3.set(counter, handle);
     this._counterMap.set(counter, key);
     this._reverseMap1.set(counter, key);
@@ -129,6 +140,13 @@ export default class VMMap {
       this.delete(key);
       return;
     }
+    if (this.arena?._afterExposed) {
+      setTimeout(() => {
+        if (handle.alive) {
+          handle.dispose();
+        }
+      }, 1000);
+    }
 
     return handle;
   }
@@ -136,6 +154,13 @@ export default class VMMap {
   getByHandle(handle: QuickJSHandle) {
     if (!handle.alive) {
       return;
+    }
+    if (this.arena?._afterExposed) {
+      setTimeout(() => {
+        if (handle.alive) {
+          handle.dispose();
+        }
+      }, 1000);
     }
     return this._counterMap.get(this.ctx.getNumber(this._call(this._mapGet, undefined, handle)));
   }
@@ -145,6 +170,13 @@ export default class VMMap {
   }
 
   hasHandle(handle: QuickJSHandle) {
+    if (this.arena?._afterExposed) {
+      setTimeout(() => {
+        if (handle.alive) {
+          handle.dispose();
+        }
+      }, 1000);
+    }
     return typeof this.getByHandle(handle) !== "undefined";
   }
 
@@ -169,26 +201,26 @@ export default class VMMap {
 
     const handle = this._map3.get(num);
     const handle2 = this._map4.get(num);
-    
+
     // Skip the expensive QuickJS _call entirely
-    
+
     // Fast cleanup using reverse maps
     const reverseKey1 = this._reverseMap1.get(num);
     const reverseKey2 = this._reverseMap2.get(num);
-    
+
     // Delete all related entries
     this._map1.delete(key);
     this._map2.delete(key);
     this._map3.delete(num);
     this._map4.delete(num);
     this._counterMap.delete(num);
-    
+
     // Clean up reverse maps
     if (reverseKey1 !== undefined && reverseKey1 !== key) {
       this._map1.delete(reverseKey1);
     }
     this._reverseMap1.delete(num);
-    
+
     if (reverseKey2 !== undefined && reverseKey2 !== key) {
       this._map2.delete(reverseKey2);
     }
@@ -206,7 +238,7 @@ export default class VMMap {
 
     const handle = this._map3.get(num);
     const handle2 = this._map4.get(num);
-    
+
     // BATCH the QuickJS call to reduce overhead - only call if handles are alive
     const aliveHandles = [handle, handle2].filter((h): h is QuickJSHandle => !!h?.alive);
     if (aliveHandles.length > 0) {
@@ -220,20 +252,20 @@ export default class VMMap {
     // Fast cleanup using reverse maps - no double deletion
     const reverseKey1 = this._reverseMap1.get(num);
     const reverseKey2 = this._reverseMap2.get(num);
-    
+
     // Delete all related entries
     this._map1.delete(key);
     this._map2.delete(key);
     this._map3.delete(num);
     this._map4.delete(num);
     this._counterMap.delete(num);
-    
+
     // Clean up reverse maps
     if (reverseKey1 !== undefined && reverseKey1 !== key) {
       this._map1.delete(reverseKey1);
     }
     this._reverseMap1.delete(num);
-    
+
     if (reverseKey2 !== undefined && reverseKey2 !== key) {
       this._map2.delete(reverseKey2);
     }
@@ -317,12 +349,22 @@ export default class VMMap {
   }
 
   _call(fn: QuickJSHandle, thisArg: QuickJSHandle | undefined, ...args: QuickJSHandle[]) {
-    return this.ctx.unwrapResult(
-      this.ctx.callFunction(
-        fn,
-        typeof thisArg === "undefined" ? this.ctx.undefined : thisArg,
-        ...args,
-      ),
+    const param = this.ctx.callFunction(
+      fn,
+      typeof thisArg === "undefined" ? this.ctx.undefined : thisArg,
+      ...args,
     );
+    const res = this.ctx.unwrapResult(param);
+    if (this.arena?._afterExposed) {
+      setTimeout(() => {
+        if (param.error?.alive) {
+          param.error.dispose();
+        }
+        if (res.alive) {
+          res.dispose();
+        }
+      }, 1000);
+    }
+    return res;
   }
 }
