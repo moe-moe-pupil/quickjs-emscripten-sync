@@ -14,6 +14,10 @@ export default function marshalFunction(
 ): QuickJSHandle | undefined {
   if (typeof target !== "function") return;
 
+  if ((ctx as any).fnNextId >= 1 << 10) {
+    (ctx as any).fnNextId = -(1 << 10);
+  }
+
   // console.log("marshalFunction", target.name, arena?._afterExposed);
   // Direct function wrapping - minimal overhead
   const raw = ctx.newFunction(target.name, function (...argHandles) {
