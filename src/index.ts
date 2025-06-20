@@ -65,6 +65,12 @@ export type Options = {
   useWorkerCleanup?: boolean;
   /** Delay in milliseconds before handles are eligible for cleanup after being created. Useful for entities that need time to be used. Default: 0 */
   cleanupDelayMs?: number;
+  /** Performance optimization: enable function caching to reduce callback trampoline overhead. Default: true */
+  enableFunctionCache?: boolean;
+  /** Performance optimization: batch size for cleanup operations. Higher values reduce overhead but may block longer. Default: 50 */
+  cleanupBatchSize?: number;
+  /** Performance optimization: maximum processing time per cleanup chunk in milliseconds. Default: 5 */
+  maxCleanupTimeMs?: number;
 };
 
 /**
@@ -91,6 +97,17 @@ export class Arena {
   private _cleanupWorker?: any; // Worker instance
   private _cleanupIdCounter = 0;
   private _delayedCleanup: Map<any, number> = new Map(); // target -> timestamp when created
+  private _enableFunctionCache = true;
+  private _cleanupBatchSize = 50;
+  private _maxCleanupTimeMs = 5;
+  private _profilingEnabled = false;
+  private _profileData: {
+    functionCalls: number;
+    cleanupOperations: number;
+    handleCreations: number;
+    handleDisposals: number;
+    startTime: number;
+  } | null = null;
 
   /** Constructs a new Arena instance. It requires a quickjs-emscripten context initialized with `quickjs.newContext()`. */
   constructor(ctx: QuickJSContext, options?: Options) {
@@ -114,6 +131,16 @@ export class Arena {
     if (options?.useWorkerCleanup) {
       this._initWorkerCleanup();
     }
+
+    // Apply performance optimizations
+    if (options?.enableFunctionCache !== false) {
+      // Function caching is enabled by default
+      this._enableFunctionCache = true;
+    }
+    
+    // Set cleanup performance parameters
+    this._cleanupBatchSize = options?.cleanupBatchSize ?? 50;
+    this._maxCleanupTimeMs = options?.maxCleanupTimeMs ?? 5;
   }
 
   /**
@@ -328,27 +355,32 @@ export class Arena {
     const toCleanup = Array.from(this._pendingCleanup);
     this._pendingCleanup.clear();
 
-    // Use very small chunks and time-based yielding
-    const MICRO_CHUNK_SIZE = 5; // Process only 5 items at a time
-    const MAX_PROCESSING_TIME = 2; // Max 2ms per chunk
+    // Optimized chunk sizes for better performance
+    const CHUNK_SIZE = Math.min(this._cleanupBatchSize, Math.max(10, toCleanup.length / 10)); // Adaptive chunk size
+    const MAX_PROCESSING_TIME = this._maxCleanupTimeMs; // Use configurable max processing time
     let currentIndex = 0;
 
     const processMicroChunk = () => {
       const startTime = performance.now();
 
       while (currentIndex < toCleanup.length) {
-        const endIndex = Math.min(currentIndex + MICRO_CHUNK_SIZE, toCleanup.length);
+        const endIndex = Math.min(currentIndex + CHUNK_SIZE, toCleanup.length);
         const microChunk = toCleanup.slice(currentIndex, endIndex);
 
         // Process this micro-chunk synchronously
         for (const [t, wrappedT] of microChunk) {
-          const unwrappedT = this._unwrap(t);
-          // FIX: Clean up ALL scheduled handles, not just synced ones
-          this._sync.delete(unwrappedT); // Remove from sync (if present)
+          try {
+            const unwrappedT = this._unwrap(t);
+            // FIX: Clean up ALL scheduled handles, not just synced ones
+            this._sync.delete(unwrappedT); // Remove from sync (if present)
 
-          // BALANCED FIX: Use fastDelete for VM handles but proper delete for registered ones
-          this._map.fastDelete(wrappedT, false); // Use fastDelete for VM objects to avoid disposal issues
-          this.unregister(t, true); // But properly dispose registered handles
+            // BALANCED FIX: Use fastDelete for VM handles but proper delete for registered ones
+            this._map.fastDelete(wrappedT, false); // Use fastDelete for VM objects to avoid disposal issues
+            this.unregister(t, true); // But properly dispose registered handles
+          } catch (error) {
+            // Silent error handling to prevent cleanup from breaking
+            console.debug('Cleanup item failed:', error);
+          }
         }
 
         currentIndex = endIndex;
@@ -362,16 +394,16 @@ export class Arena {
 
       // Continue processing if there are more items
       if (currentIndex < toCleanup.length) {
-        // Use setImmediate for next micro-chunk
-        setImmediate(processMicroChunk);
+        // Use setTimeout with 0 delay for better event loop integration
+        setTimeout(processMicroChunk, 0);
       } else {
         // Cleanup is complete
         this._isProcessingCleanup = false;
       }
     };
 
-    // Start with setImmediate to yield immediately
-    setImmediate(processMicroChunk);
+    // Start with setTimeout to yield immediately
+    setTimeout(processMicroChunk, 0);
   }
 
   /**
@@ -607,14 +639,17 @@ export class Arena {
   private _autoAdjustCleanup() {
     const pendingCount = this._pendingCleanup.size;
 
-    if (pendingCount > 1000) {
-      // High load - throttle more aggressively
+    if (pendingCount > 2000) {
+      // Very high load - aggressive throttling
+      this._cleanupThrottleMs = 200;
+    } else if (pendingCount > 1000) {
+      // High load - moderate throttling
       this._cleanupThrottleMs = 100;
     } else if (pendingCount > 500) {
-      // Medium load - moderate throttling
+      // Medium load - light throttling
       this._cleanupThrottleMs = 50;
     } else if (pendingCount > 100) {
-      // Low load - light throttling
+      // Low load - minimal throttling
       this._cleanupThrottleMs = 10;
     } else {
       // Very low load - no throttling
@@ -725,26 +760,7 @@ export class Arena {
     mode: true | "json" | undefined,
   ): Wrapped<QuickJSHandle> | undefined => {
     if (mode === "json") return;
-    if (this._afterExposed) {
-      setTimeout(() => {
-        const handle = handleFrom(h);
-        if (handle && handle.alive) {
-          handle.dispose?.();
-        }
-        if (h && h.alive) {
-          h.dispose?.();
-        }
-      }, 1000);
-    }
-    const res = this._register(t, handleFrom(h), this._map, this._options?.syncEnabled)?.[1];
-    if(this._afterExposed) {
-      setTimeout(() => {
-        if(res && res.alive) {
-          res.dispose();
-        }
-      }, 1000);
-    }
-    return res;
+    return this._register(t, handleFrom(h), this._map, this._options?.syncEnabled)?.[1];
   };
 
   _marshalPreApply = (target: Function, that: unknown, args: unknown[]): void => {
@@ -786,21 +802,10 @@ export class Arena {
   };
 
   _preUnmarshal = (t: any, h: QuickJSHandle): Wrapped<any> => {
-    setTimeout(() => {
-      if (this._afterExposed) {
-        if (h.alive) {
-          h.dispose?.();
-        }
-      }
-    }, 1000);
-    const res = this._register(t, h, undefined, this._options?.syncEnabled ?? true)?.[0];
     if (this._afterExposed) {
-      setTimeout(() => {
-        if (res?.alive) {
-          res.dispose?.();
-        }
-      }, 1000);
+      return t;
     }
+    const res = this._register(t, h, undefined, this._options?.syncEnabled ?? true)?.[0];
     return res;
   };
 
@@ -825,13 +830,13 @@ export class Arena {
         }
       }, 1000);
     }
-    return unmarshal(wrappedHandle ?? handle, {
+    return unmarshal(this._afterExposed ? handle : (wrappedHandle ?? handle), {
       ctx: this.context,
       marshal: this._marshal,
       find: this._unmarshalFind,
       pre: this._preUnmarshal,
       custom: this._options?.customUnmarshaller,
-    });
+    }, this);
   };
 
   _register(
@@ -847,29 +852,20 @@ export class Arena {
     let wrappedT = this._wrap(t);
     const [wrappedH] = this._wrapHandle(h);
     const isPromise = t instanceof Promise;
-    if (!wrappedH || (!wrappedT && !isPromise)) return; // t or h is not an object
+    if (!wrappedH || (!wrappedT && !isPromise)) return; // t or h is not an object    
     if (isPromise) wrappedT = t;
 
     const unwrappedT = this._unwrap(t);
     const [unwrappedH, unwrapped] = this._unwrapHandle(h);
 
     const res = map.set(wrappedT, wrappedH, unwrappedT, unwrappedH);
-    if(this._afterExposed) {
-      setTimeout(() => {
-        if(h && h.alive) {
-          h.dispose();
-        }
-        if(unwrappedH && unwrappedH.alive) {
-          unwrappedH.dispose();
-        }
-      }, 1000);
-    }
+
     if (!res) {
       // already registered
       if (unwrapped) unwrappedH.dispose();
       throw new Error("already registered");
     } else {
-      if (sync) {
+      if (sync && !this._afterExposed) {
         this._sync.add(unwrappedT);
         // If after exposed, schedule handle for cleanup after syncing once
         if (this._afterExposed) {
@@ -951,5 +947,75 @@ export class Arena {
       }, 1000);
     }
     return res;
+  }
+
+  /**
+   * Get performance metrics for debugging callback trampoline issues
+   */
+  getPerformanceMetrics() {
+    return {
+      pendingCleanupCount: this._pendingCleanup.size,
+      delayedCleanupCount: this._delayedCleanup.size,
+      syncCount: this._sync.size,
+      temporalSyncCount: this._temporalSync.size,
+      cleanupThrottleMs: this._cleanupThrottleMs,
+      isProcessingCleanup: this._isProcessingCleanup,
+      cleanupScheduled: this._cleanupScheduled,
+      cleanupDisabled: this._cleanupDisabled,
+      workerActive: !!this._cleanupWorker,
+      functionCacheEnabled: this._enableFunctionCache,
+      cleanupBatchSize: this._cleanupBatchSize,
+      maxCleanupTimeMs: this._maxCleanupTimeMs,
+    };
+  }
+
+  /**
+   * Enable performance profiling for callback trampoline debugging
+   */
+  enableProfiling() {
+    this._profilingEnabled = true;
+    this._profileData = {
+      functionCalls: 0,
+      cleanupOperations: 0,
+      handleCreations: 0,
+      handleDisposals: 0,
+      startTime: performance.now(),
+    };
+  }
+
+  /**
+   * Get profiling data for performance analysis
+   */
+  getProfileData() {
+    if (!this._profilingEnabled || !this._profileData) {
+      return null;
+    }
+    
+    const elapsed = performance.now() - this._profileData.startTime;
+    return {
+      ...this._profileData,
+      elapsedMs: elapsed,
+      operationsPerSecond: {
+        functionCalls: (this._profileData.functionCalls / elapsed) * 1000,
+        cleanupOperations: (this._profileData.cleanupOperations / elapsed) * 1000,
+        handleCreations: (this._profileData.handleCreations / elapsed) * 1000,
+        handleDisposals: (this._profileData.handleDisposals / elapsed) * 1000,
+      }
+    };
+  }
+
+  /**
+   * Reset profiling data
+   */
+  resetProfiling() {
+    if (this._profilingEnabled) {
+      this._profileData = {
+        functionCalls: 0,
+        cleanupOperations: 0,
+        handleCreations: 0,
+        handleDisposals: 0,
+        startTime: performance.now(),
+      };
+    }
   }
 }

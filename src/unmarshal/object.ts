@@ -12,9 +12,6 @@ export default function unmarshalObject(
   preUnmarshal: <T>(target: T, handle: QuickJSHandle) => T | undefined,
   arena?: Arena,
 ): object | undefined {
-  if (arena?._afterExposed) {
-    return;
-  }
   if (
     ctx.typeof(handle) !== "object" ||
     // null check
@@ -25,6 +22,7 @@ export default function unmarshalObject(
     return;
 
   const raw = call(ctx, "Array.isArray", undefined, handle).consume(r => ctx.dump(r)) ? [] : {};
+
   const obj = preUnmarshal(raw, handle) ?? raw;
 
   const prototype = call(
@@ -44,8 +42,7 @@ export default function unmarshalObject(
     Object.setPrototypeOf(obj, prototype);
   }
 
-  
-  unmarshalProperties(ctx, handle, raw, unmarshal);
+  unmarshalProperties(ctx, handle, raw, unmarshal, arena);
 
   return obj;
 }

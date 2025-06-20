@@ -34,9 +34,9 @@ export function marshal(target: unknown, options: Options, arena?: Arena): Quick
 
   {
     const handle = find(target);
-    if(arena?._afterExposed) {
+    if (arena?._afterExposed) {
       setTimeout(() => {
-        if(handle && handle.alive) {
+        if (handle && handle.alive) {
           handle.dispose();
         }
       }, 1000);
@@ -51,6 +51,7 @@ export function marshal(target: unknown, options: Options, arena?: Arena): Quick
 
   const pre2 = (target: any, handle: QuickJSHandle | QuickJSDeferredPromise) =>
     pre(target, handle, marshalable);
+
   if (marshalable === "json") {
     return marshalJSON(ctx, target, pre2);
   }
@@ -58,8 +59,8 @@ export function marshal(target: unknown, options: Options, arena?: Arena): Quick
   const marshal2 = (t: unknown) => marshal(t, options, arena);
 
   return (
-    marshalCustom(ctx, target, pre2, [...defaultCustom, ...(options.custom ?? [])]) ??
-    marshalPromise(ctx, target, marshal2, pre2) ??
+    // marshalCustom(ctx, target, pre2, [...defaultCustom, ...(options.custom ?? [])]) ??
+    // marshalPromise(ctx, target, marshal2, pre2) ??
     marshalFunction(ctx, target, marshal2, unmarshal, pre2, options.preApply, arena) ??
     marshalObject(ctx, target, marshal2, pre2, arena) ??
     ctx.undefined

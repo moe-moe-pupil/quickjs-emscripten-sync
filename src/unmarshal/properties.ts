@@ -10,21 +10,18 @@ export default function unmarshalProperties(
   unmarshal: (handle: QuickJSHandle) => [unknown, boolean],
   arena?: Arena,
 ) {
-  if(arena?._afterExposed) {
-    return;
+  if (arena?._afterExposed) {
+    setTimeout(() => {
+      if (handle.alive) {
+        handle.dispose();
+      }
+    }, 0);
   }
   ctx
     .newFunction("", (key, value) => {
       const [keyName] = unmarshal(key);
       if (typeof keyName !== "string" && typeof keyName !== "number" && typeof keyName !== "symbol")
         return;
-      if (arena?._afterExposed) {
-        setTimeout(() => {
-          if (key.alive) {
-            key.dispose();
-          }
-        }, 1000);
-      }
       const desc = (
         [
           ["value", arena?._afterExposed ? true : true],
@@ -52,9 +49,7 @@ export default function unmarshalProperties(
 
         return desc;
       }, {});
-      if(!arena?._afterExposed) {
-        Object.defineProperty(target, keyName, desc);
-      }
+      Object.defineProperty(target, keyName, desc);
     })
     .consume(fn => {
       call(

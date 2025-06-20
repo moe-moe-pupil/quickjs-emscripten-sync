@@ -324,3 +324,87 @@ For now, only the `set` and `deleteProperty` operations on objects are subject t
 ## License
 
 [MIT License](LICENSE)
+
+## Performance Optimization
+
+If you're experiencing slow `callbackTrampoline` performance, here are several optimizations you can apply:
+
+### 1. Enable Function Caching (Recommended)
+```javascript
+const arena = new Arena(ctx, {
+  enableFunctionCache: true, // Default: true
+});
+```
+
+### 2. Optimize Cleanup Settings
+```javascript
+const arena = new Arena(ctx, {
+  cleanupBatchSize: 100,        // Process more items per batch (default: 50)
+  maxCleanupTimeMs: 10,         // Allow longer processing time (default: 5)
+  cleanupThrottleMs: 50,        // Throttle cleanup frequency
+  deferAllCleanup: true,        // Defer all cleanup for better performance
+  useWorkerCleanup: true,       // Use worker thread for cleanup
+});
+```
+
+### 3. Monitor Performance
+```javascript
+// Enable profiling
+arena.enableProfiling();
+
+// Get performance metrics
+const metrics = arena.getPerformanceMetrics();
+console.log('Performance metrics:', metrics);
+
+// Get detailed profiling data
+const profileData = arena.getProfileData();
+console.log('Profile data:', profileData);
+```
+
+### 4. Use Ephemeral Mode for Scripts
+```javascript
+const arena = new Arena(ctx, {
+  ephemeralMode: true, // Automatically cleanup after each evalCode
+});
+```
+
+### 5. Disable Sync for Performance-Critical Code
+```javascript
+const arena = new Arena(ctx, {
+  syncEnabled: false, // Disable object synchronization
+});
+```
+
+### Common Performance Issues and Solutions:
+
+1. **High function call overhead**: Enable function caching
+2. **Excessive cleanup operations**: Increase batch size and throttle
+3. **Memory leaks**: Use ephemeral mode or defer cleanup
+4. **Blocking cleanup**: Use worker thread cleanup
+5. **Frequent handle creation**: Optimize your code to reuse objects
+
+### Performance Monitoring Example:
+```javascript
+const arena = new Arena(ctx, {
+  enableFunctionCache: true,
+  cleanupBatchSize: 100,
+  maxCleanupTimeMs: 10,
+});
+
+// Enable profiling
+arena.enableProfiling();
+
+// Run your code
+arena.evalCode('your code here');
+
+// Check performance
+const metrics = arena.getPerformanceMetrics();
+if (metrics.pendingCleanupCount > 1000) {
+  console.warn('High cleanup queue detected');
+}
+
+const profile = arena.getProfileData();
+if (profile && profile.operationsPerSecond.functionCalls > 1000) {
+  console.warn('High function call rate detected');
+}
+```

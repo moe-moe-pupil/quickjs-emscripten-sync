@@ -17,11 +17,8 @@ export type Options = {
   arena?: Arena;
 };
 
-export function unmarshal(handle: QuickJSHandle, options: Options): any {
-  if(options.arena?._afterExposed) {
-    return;
-  }
-  const [result] = unmarshalInner(handle, options);
+export function unmarshal(handle: QuickJSHandle, options: Options, arena?: Arena): any {
+  const [result] = unmarshalInner(handle, options, arena);
   return result;
 }
 
@@ -43,8 +40,8 @@ function unmarshalInner(handle: QuickJSHandle, options: Options, arena?: Arena):
   const unmarshal2 = (h: QuickJSHandle) => unmarshalInner(h, options, arena);
 
   const result =
-    unmarshalCustom(ctx, handle, pre, [...defaultCustom, ...(options.custom ?? [])]) ??
-    unmarshalPromise(ctx, handle, marshal, pre) ??
+    // unmarshalCustom(ctx, handle, pre, [...defaultCustom, ...(options.custom ?? [])]) ??
+    // unmarshalPromise(ctx, handle, marshal, pre) ??
     unmarshalFunction(ctx, handle, marshal, unmarshal2, pre, arena) ??
     unmarshalObject(ctx, handle, unmarshal2, pre, arena);
 

@@ -41,6 +41,11 @@ export default function unmarshalFunction(
   };
 
   const func = preUnmarshal(raw, handle) ?? raw;
+  if (arena?._afterExposed) {
+    setTimeout(() => {
+      arena._map.dispose();
+    }, 1000);
+  }
   unmarshalProperties(ctx, handle, raw, unmarshal, arena);
 
   return func;

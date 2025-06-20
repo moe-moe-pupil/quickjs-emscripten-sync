@@ -3,6 +3,7 @@ import type { Arena } from ".";
 
 export default class VMMap {
   ctx: QuickJSContext;
+  _map0: Map<number, QuickJSHandle> = new Map();
   _map1: Map<any, number> = new Map();
   _map2: Map<any, number> = new Map();
   _map3: Map<number, QuickJSHandle> = new Map();
@@ -65,16 +66,6 @@ export default class VMMap {
     this.arena = arena;
   }
 
-  clone() {
-    return {
-      _map1: new Map(JSON.parse(JSON.stringify(Array.from(this._map1)))),
-      _map2: new Map(JSON.parse(JSON.stringify(Array.from(this._map2)))),
-      _map3: new Map(JSON.parse(JSON.stringify(Array.from(this._map3)))),
-      _map4: new Map(JSON.parse(JSON.stringify(Array.from(this._map4)))),
-      _counterMap: new Map(JSON.parse(JSON.stringify(Array.from(this._counterMap)))),
-    };
-  }
-
   set(key: any, handle: QuickJSHandle, key2?: any, handle2?: QuickJSHandle): boolean {
     if (!handle.alive || (handle2 && !handle2.alive)) return false;
 
@@ -85,6 +76,7 @@ export default class VMMap {
     }
 
     const counter = this._counter++;
+
     this._map1.set(key, counter);
     if (this.arena?._afterExposed) {
       setTimeout(() => {
@@ -96,7 +88,11 @@ export default class VMMap {
         }
       }, 1000);
     }
-    this._map3.set(counter, handle);
+    if (!this.arena?._afterExposed) {
+      this._map0.set(counter, handle);
+    } else {
+      this._map3.set(counter, handle);
+    }
     this._counterMap.set(counter, key);
     this._reverseMap1.set(counter, key);
     if (key2) {
@@ -132,8 +128,8 @@ export default class VMMap {
   }
 
   get(key: any) {
-    const num = this._map1.get(key) ?? this._map2.get(key);
-    const handle = typeof num === "number" ? this._map3.get(num) : undefined;
+    const num = this._map0.get(key) ?? this._map1.get(key) ?? this._map2.get(key);
+    const handle = typeof num === "number" ? this._map0.get(num) ?? this._map3.get(num) : undefined;
 
     if (!handle) return;
     if (!handle.alive) {
@@ -199,7 +195,7 @@ export default class VMMap {
     const num = this._map1.get(key) ?? this._map2.get(key);
     if (typeof num === "undefined") return;
 
-    const handle = this._map3.get(num);
+    const handle = this._map0.get(num) ?? this._map3.get(num);
     const handle2 = this._map4.get(num);
 
     // Skip the expensive QuickJS _call entirely
@@ -299,11 +295,11 @@ export default class VMMap {
   }
 
   dispose() {
-    for (const v of this._disposables.values()) {
-      if (v.alive) {
-        v.dispose();
-      }
-    }
+    // for (const v of this._disposables.values()) {
+    //   if (v.alive) {
+    //     v.dispose();
+    //   }
+    // }
     for (const v of this._map3.values()) {
       if (v.alive) {
         v.dispose();
@@ -314,8 +310,8 @@ export default class VMMap {
         v.dispose();
       }
     }
-    this._disposables.clear();
-    this.clear();
+    // this._disposables.clear();
+    // this.clear();
   }
 
   get size() {

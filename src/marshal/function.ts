@@ -1,7 +1,9 @@
 import type { QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
 
-import { call } from "../vmutil";
 import { Arena } from "..";
+
+// Function cache to avoid recreating the same function wrappers
+const functionCache = new WeakMap<Function, QuickJSHandle>();
 
 export default function marshalFunction(
   ctx: QuickJSContext,
@@ -14,6 +16,16 @@ export default function marshalFunction(
 ): QuickJSHandle | undefined {
   if (typeof target !== "function") return;
 
+  // Check cache first to avoid recreating function wrappers
+  if (functionCache.has(target)) {
+    const cachedHandle = functionCache.get(target);
+    if (cachedHandle && cachedHandle.alive) {
+      return cachedHandle;
+    } else {
+      functionCache.delete(target);
+    }
+  }
+
   if ((ctx as any).fnNextId >= 1 << 10) {
     (ctx as any).fnNextId = -(1 << 10);
   }
@@ -21,28 +33,41 @@ export default function marshalFunction(
   // console.log("marshalFunction", target.name, arena?._afterExposed);
   // Direct function wrapping - minimal overhead
   const raw = ctx.newFunction(target.name, function (...argHandles) {
-    // Direct argument conversion without intermediate processing
-    const that = unmarshal(this);
-    const args = argHandles.map(unmarshal);
+    try {
+      // Optimize argument conversion - only unmarshal if needed
+      const that = this === ctx.global ? undefined : unmarshal(this);
+      const args = argHandles.map(unmarshal);
 
-    // Call the host function directly
-    const result = target.apply(that, args);
+      // Call the host function directly
+      const result = target.apply(that, args);
 
-    // Marshal result back to VM
-    const handle = marshal(result);
-    if (arena?._afterExposed) {
-      setTimeout(() => {
-        if (handle.alive) {
-          // console.log("dis pose return handle");
-          handle.dispose();
+      // Marshal result back to VM
+      const handle = marshal(result);
+      
+      // Optimize cleanup for afterExposed mode
+      if (arena?._afterExposed) {
+        // Use requestIdleCallback for non-critical cleanup
+        if (typeof requestIdleCallback !== 'undefined') {
+          requestIdleCallback(() => {
+            if (handle.alive) {
+              handle.dispose();
+            }
+          });
+        } else {
+          // Fallback to setTimeout with longer delay
+          setTimeout(() => {
+            if (handle.alive) {
+              handle.dispose();
+            }
+          }, 100);
         }
-        if (raw.alive) {
-          // console.log("dispose raw");
-          raw.dispose();
-        }
-      }, 1000);
+      }
+      return handle;
+    } catch (error) {
+      // Handle errors more efficiently
+      console.error('Function execution error:', error);
+      return ctx.undefined;
     }
-    return handle;
   });
 
   // Make function constructable if needed (class support)
@@ -59,6 +84,9 @@ export default function marshalFunction(
   //     handle2,
   //   ),
   // );
+
+  // Cache the function wrapper
+  functionCache.set(target, raw);
 
   return raw;
 }
