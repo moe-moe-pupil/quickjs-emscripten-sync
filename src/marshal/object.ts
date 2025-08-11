@@ -41,8 +41,16 @@ export default function marshalObject(
     }, 1000);
   }
   // console.log("target", (target as any)._category);
-  if (!arena?._afterExposed || (target as any)._from === 'param') {
-    marshalProperties(ctx, target, raw, marshal);
+  let finalObj: any = target;
+
+  if ((target as any)._category !== undefined && (target as any)._id !== undefined) {
+    finalObj = { _id: (target as any)._id, id: () => (target as any)._id };
+    // console.log('simplified', finalObj);
+  }
+
+  if (!arena?._afterExposed || (finalObj?._from === 'param')) {
+    // console.log(finalObj)
+    marshalProperties(ctx, finalObj, raw, marshal);
   }
   return handle;
 }
